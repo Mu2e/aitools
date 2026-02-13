@@ -1,4 +1,13 @@
-````markdown
+```skill
+---
+name: understanding-data-handling
+description: Overview of Mu2e data handling architecture, file naming conventions, dCache storage, and SAM-to-metacat transition. Use when understanding data organization, storage locations, or choosing between SAM and metacat tools.
+compatibility: Requires mu2einit, kerberos authentication
+metadata:
+  version: "1.0.0"
+  last-updated: "2026-02-13"
+---
+
 # Mu2e Data Handling - Overview
 
 ## Architecture and Transition

@@ -1,4 +1,13 @@
-````markdown
+```skill
+---
+name: building-with-muse
+description: Complete muse build system reference for Mu2e. Use when building with muse, managing envsets, creating tarballs, or understanding Phase 2 architecture with spack dependencies.
+compatibility: Requires muse installed, access to spack envsets
+metadata:
+  version: "1.0.0"
+  last-updated: "2026-02-13"
+---
+
 # Muse Build System - Complete Reference
 
 ## Overview

@@ -1,4 +1,13 @@
-````markdown
+```skill
+---
+name: finding-data-sam
+description: Find and access Mu2e data using SAM tools. Use with samweb commands, dataset queries, file locations, prestaging from tape, or SAM dimensions. Currently the primary tool (~90% usage) during transition period.
+compatibility: Requires mu2einit, muse setup ops, samweb, dhtools
+metadata:
+  version: "1.0.0"
+  last-updated: "2026-02-13"
+---
+
 # SAM Data Handling - Reference
 
 SAM (Sequential Access to Metadata) is the primary file catalog and location service for approximately 90% of Mu2e data workflows. It manages:

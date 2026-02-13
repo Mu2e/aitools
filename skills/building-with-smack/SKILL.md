@@ -1,4 +1,13 @@
-````markdown
+```skill
+---
+name: building-with-smack
+description: Smack build system reference for Phase 3 Mu2e workflow with pure spack and cmake. Use when working with future smack-based builds or transitioning from muse.
+compatibility: Future Phase 3 system, not yet in production
+metadata:
+  version: "1.0.0"
+  last-updated: "2026-02-13"
+---
+
 # Smack/Spack Build System - Reference
 
 ## Overview

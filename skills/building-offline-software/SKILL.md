@@ -1,5 +1,14 @@
-````markdown
-# Mu2e Offline Software - AI Assistant Instructions
+```skill
+---
+name: building-offline-software
+description: Build and develop Mu2e offline software using muse, git workflows, and multi-repository coordination. Use when working with Offline, Production, or mu2e-trig-config repositories, running muse commands, or managing git branches.
+compatibility: Requires access to Fermilab computing resources, mu2einit, muse build system, git
+metadata:
+  version: "1.0.0"
+  last-updated: "2026-02-13"
+---
+
+# Building Offline Software
 
 ## Overview
 

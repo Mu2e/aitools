@@ -1,3 +1,13 @@
+```skill
+---
+name: finding-data-metacat
+description: Find and manage Mu2e data using modern metacat, Rucio, and mdh tools. Use when querying with metacat MQL, uploading files, checking locations, prestaging from tape, or working with the future data handling stack.
+compatibility: Requires mu2einit, muse setup ops, metacat, mdh, Rucio
+metadata:
+  version: "1.0.0"
+  last-updated: "2026-02-13"
+---
+
 # Mu2e Data Handling - Metacat, Rucio, and mdh
 
 **Modern data handling tools** (replacing SAM as of 2025-2026)

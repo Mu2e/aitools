@@ -3,7 +3,7 @@
 
 ## Quick Start
 
-**Read this file first**, then see [skills/offline-instructions.md](skills/offline-instructions.md) for detailed build procedures, repository structure, and workflows.
+**Read this file first**, then see [skills/building-offline-software](skills/building-offline-software/SKILL.md) for detailed build procedures, repository structure, and workflows.
 
 ## What is This Workspace?
 
@@ -89,7 +89,7 @@ muse build -j $(nproc) --mu2eCompactPrint    # Use available cores
 muse build -j 2 --mu2eCompactPrint           # Conservative for shared systems
 ```
 
-See [skills/offline-instructions.md](skills/offline-instructions.md) for complete build workflows, environment setup, and troubleshooting.
+See [skills/building-offline-software](skills/building-offline-software/SKILL.md) for complete build workflows, environment setup, and troubleshooting.
 
 ## Special Cases
 
@@ -134,7 +134,7 @@ This workflow keeps the upstream repo clean while enabling distributed contribut
 
 When helping users:
 
-1. **Always check** [skills/offline-instructions.md](skills/offline-instructions.md) for detailed procedures
+1. **Always check** [skills/building-offline-software](skills/building-offline-software/SKILL.md) for detailed procedures
 2. **Environment**: Assume `mu2einit` has been run before any muse commands
 3. **Never suggest cmake directly** - Use muse commands
 4. **Check current state**: Run `muse status` to understand setup
@@ -145,9 +145,12 @@ When helping users:
 
 For detailed procedures and reference material, consult the **skills/** directory:
 
-- **Detailed offline procedures**: [skills/offline-instructions.md](skills/offline-instructions.md)
-- **Complete Muse reference**: [skills/muse-reference.md](skills/muse-reference.md)
-- **Smack/Spack reference**: [skills/smack-reference.md](skills/smack-reference.md)
+- **Building offline software**: [skills/building-offline-software](skills/building-offline-software/SKILL.md)
+- **Muse build system**: [skills/building-with-muse](skills/building-with-muse/SKILL.md)
+- **Smack/Spack (Phase 3)**: [skills/building-with-smack](skills/building-with-smack/SKILL.md)
+- **Data handling overview**: [skills/understanding-data-handling](skills/understanding-data-handling/SKILL.md)
+- **Finding data with SAM**: [skills/finding-data-sam](skills/finding-data-sam/SKILL.md)
+- **Finding data with metacat**: [skills/finding-data-metacat](skills/finding-data-metacat/SKILL.md)
 
 External references:
 - **Mu2e wiki**: https://mu2ewiki.fnal.gov/wiki/Main_Page
