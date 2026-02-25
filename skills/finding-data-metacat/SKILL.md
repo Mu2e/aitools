@@ -1,4 +1,3 @@
-```skill
 ---
 name: finding-data-metacat
 description: Find and manage Mu2e data using modern metacat, Rucio, and mdh tools. Use when querying with metacat MQL, uploading files, checking locations, prestaging from tape, or working with the future data handling stack.

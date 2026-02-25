@@ -1,4 +1,3 @@
-```skill
 ---
 name: coding-with-fhicl
 description: Author, review, and troubleshoot Mu2e FHiCL configuration files for Offline, Production, and trigger workflows. Use when editing .fcl files, composing include chains, configuring modules/services, or debugging job configuration failures.
@@ -447,7 +446,7 @@ Do not:
 
 Use this template when proposing a FHiCL change:
 
-```markdown
+````markdown
 ### Proposed FHiCL Change
 
 **Goal**
@@ -470,14 +469,13 @@ mu2e --debug-config expanded.fcl -c <config.fcl> --annotate
 fhicl-dump -a <config.fcl> > expanded_annotated.fcl
 mu2e -c <config.fcl> -n 1
 mu2e -c <config.fcl> -n 10
-```
+````
 
 **Expected result**
 - <startup passes / expected module in path / output present>
 
 **Cross-repo impacts**
 - <none | list>
-```
 
 ---
 

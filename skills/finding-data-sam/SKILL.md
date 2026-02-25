@@ -1,4 +1,3 @@
-```skill
 ---
 name: finding-data-sam
 description: Find and access Mu2e data using SAM tools. Use with samweb commands, dataset queries, file locations, prestaging from tape, or SAM dimensions. Currently the primary tool (~90% usage) during transition period.
@@ -488,4 +487,3 @@ ls -lh sim.mu2e.*.art
 **Last updated**: 2026-02-12  
 **Status**: SAM is the current standard; for transition to metacat/Rucio, see datahandling-metacat-rucio-mdh.md
 
-````
