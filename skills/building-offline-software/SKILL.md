@@ -1,4 +1,3 @@
-```skill
 ---
 name: building-offline-software
 description: Build and develop Mu2e offline software using muse, git workflows, and multi-repository coordination. Use when working with Offline, Production, or mu2e-trig-config repositories, running muse commands, or managing git branches.
@@ -355,4 +354,3 @@ When you execute commands:
 **Maintained by**: Offline software coordinators  
 **Questions**: Post in #help-bug or #offlineSoftware on Mu2e Slack
 
-````

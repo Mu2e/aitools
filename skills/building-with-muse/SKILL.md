@@ -1,4 +1,3 @@
-```skill
 ---
 name: building-with-muse
 description: Complete muse build system reference for Mu2e. Use when building with muse, managing envsets, creating tarballs, or understanding Phase 2 architecture with spack dependencies.
@@ -566,4 +565,3 @@ muse setup                          # Re-use existing config
 
 **Last updated**: 2026-02-07
 
-````

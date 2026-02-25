@@ -1,4 +1,3 @@
-```skill
 ---
 name: coding-with-query-engine
 description: Build and troubleshoot Mu2e Query Engine (QE) URL reads for PostgreSQL-backed conditions and operations data. Use when composing QE URLs, doing Python HTTP reads, or implementing C++ database fetches with Offline DbService DbReader/DbId helpers.
@@ -336,5 +335,3 @@ Validation:
 - `Offline/DbService/inc/DbIdList.hh`
 - `Offline/DbService/src/DbIdList.cc`
 - `Offline/DbService/data/connections.txt`
-
-```

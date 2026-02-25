@@ -1,4 +1,3 @@
-```skill
 ---
 name: understanding-data-handling
 description: Overview of Mu2e data handling architecture, file naming conventions, dCache storage, and SAM-to-metacat transition. Use when understanding data organization, storage locations, or choosing between SAM and metacat tools.
@@ -333,4 +332,3 @@ Individual tools will have detailed references:
 **Last updated**: 2026-02-12  
 **Note**: This is an overview. For detailed tool documentation, see individual skill files.
 
-````

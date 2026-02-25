@@ -1,4 +1,3 @@
-```skill
 ---
 name: building-with-smack
 description: Smack build system reference for Phase 3 Mu2e workflow with pure spack and cmake. Use when working with future smack-based builds or transitioning from muse.
@@ -202,4 +201,3 @@ view:
 
 **Note**: This guide is based on current Phase 3 documentation and may evolve. Always verify with actual command output and current Mu2e computing guidance.
 
-````
