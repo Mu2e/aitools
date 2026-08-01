@@ -3,7 +3,7 @@ name: reviewing-pull-requests
 description: Perform effective code review for Mu2e pull requests. Use when reviewing PRs, assessing risk, checking cross-repo impacts, validating tests/builds, and producing actionable reviewer feedback with severity and evidence.
 compatibility: Requires git access, Mu2e offline context, and ability to run targeted checks when needed
 metadata:
-  version: "1.3.0"
+  version: "1.4.0"
   last-updated: "2026-08-01"
 ---
 
@@ -192,10 +192,19 @@ Reviewer check:
 
 ## Severity Levels
 
-- **S0 Blocker**: incorrect behavior, data corruption, crash, invalid configuration, or missing required cross-repo change.
-- **S1 Major**: high-likelihood bug/regression or incomplete validation for risky change.
-- **S2 Minor**: maintainability/readability issue with low immediate risk.
-- **S3 Nit**: style/format/comment-only suggestion.
+Pair each severity tag with a colored circle so findings scan at a glance
+(GitHub renders these natively):
+
+- 🔴 **S0 Blocker**: incorrect behavior, data corruption, crash, invalid configuration, or missing required cross-repo change.
+- 🟠 **S1 Major**: high-likelihood bug/regression or incomplete validation for risky change.
+- 🟡 **S2 Minor**: maintainability/readability issue with low immediate risk.
+- ⚪ **S3 Nit**: style/format/comment-only suggestion.
+- 🟢 marks verified-correct material and the approve decision — use it on
+  "checked, no action needed" items so green sections read as cleared,
+  not skipped.
+
+Lead every finding title with its circle + tag (`🟠 [S1] ...`) and the
+Decision line with 🔴 (request changes), 🟡 (comment), or 🟢 (approve).
 
 Only raise severity when evidence supports it.
 
@@ -231,18 +240,18 @@ Use these concise prompts:
 ### PR Review Summary
 
 **Decision**
-- <approve | request changes | comment only>
+- <🟢 approve | 🔴 request changes | 🟡 comment only>
 
 **Scope understood**
 - <1-3 bullets>
 
 **Findings**
-1. [S0|S1|S2|S3] <title>
+1. <🔴|🟠|🟡|⚪> [S0|S1|S2|S3] <title>
    - Evidence: <file/behavior/command>
    - Impact: <why it matters>
    - Suggested fix: <concrete change>
 
-2. [Sx] ...
+2. <circle> [Sx] ...
 
 **Validation check**
 - Build/tests run: <yes/no + commands>
