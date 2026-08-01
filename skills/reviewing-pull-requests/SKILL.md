@@ -3,7 +3,7 @@ name: reviewing-pull-requests
 description: Perform effective code review for Mu2e pull requests. Use when reviewing PRs, assessing risk, checking cross-repo impacts, validating tests/builds, and producing actionable reviewer feedback with severity and evidence.
 compatibility: Requires git access, Mu2e offline context, and ability to run targeted checks when needed
 metadata:
-  version: "1.4.0"
+  version: "1.5.0"
   last-updated: "2026-08-01"
 ---
 
@@ -304,6 +304,36 @@ For PRs touching `.fcl` composition, include checks that:
 - dotted epilog overrides resolve as expected,
 - include resolution via `FHICL_FILE_PATH` is valid,
 - `fhicl-dump -a` provenance confirms final values.
+
+---
+
+## Re-Reviews and Carry-Forward
+
+When a review of this PR already exists — a staged file in
+`~/pr_reviews/pr<N>_review.md`, a posted review, or another reviewer's
+change requests — load it BEFORE reviewing, and account for every prior
+finding in the new review. Prior findings never silently vanish.
+
+Classify each prior finding against the new head:
+
+- **FIXED** — verify the fix at the same evidence bar as a new finding
+  (do not trust the commit message; an author's "fixed" commit can
+  implement half the prescription — see From Review to Fix). Then move
+  it to the verified section as `🟢 [was Sx] ... — FIXED in <sha>,
+  verified`.
+- **UNADDRESSED** — carry forward at the original severity, marked
+  "carried over". Unresolved 🔴/🟠 lead the findings list of the new
+  review.
+- **PARTIAL** — state exactly which part remains open; keep the
+  original severity unless the remaining part is genuinely lower.
+- **WITHDRAWN** — only with new evidence; state explicitly what changed
+  the assessment.
+
+Scope of the re-review pass: diff `<previously-reviewed-head>..<new
+head>` — but re-verify any prior finding whose evidence the delta
+touches, and any prior finding in files the delta did NOT touch stays
+open by definition. Include other reviewers' requested changes in the
+accounting (addressed or not), not just your own.
 
 ---
 
