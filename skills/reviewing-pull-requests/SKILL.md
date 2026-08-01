@@ -3,8 +3,8 @@ name: reviewing-pull-requests
 description: Perform effective code review for Mu2e pull requests. Use when reviewing PRs, assessing risk, checking cross-repo impacts, validating tests/builds, and producing actionable reviewer feedback with severity and evidence.
 compatibility: Requires git access, Mu2e offline context, and ability to run targeted checks when needed
 metadata:
-  version: "1.2.0"
-  last-updated: "2026-03-06"
+  version: "1.3.0"
+  last-updated: "2026-08-01"
 ---
 
 # Reviewing Pull Requests
@@ -295,3 +295,30 @@ For PRs touching `.fcl` composition, include checks that:
 - dotted epilog overrides resolve as expected,
 - include resolution via `FHICL_FILE_PATH` is valid,
 - `fhicl-dump -a` provenance confirms final values.
+
+---
+
+## From Review to Fix
+
+When authoring a patch that implements a finding from one of your own
+reviews (yours or a colleague's):
+
+1. **Re-read the finding's full prescription before writing the patch.**
+   Implement all of it. A review that says "replace X with Y" is not
+   implemented by "add Y" — the removal of X was part of the finding.
+2. **State deliberate omissions in the PR body.** If you intentionally
+   narrow the fix (hotfix urgency, risk control), write "deliberately
+   not touching X because ..." so the reviewer sees a decision, not an
+   oversight. Silent deltas between the review and the patch cost a
+   review round-trip at best.
+3. **"Established idiom" is not a keep-reason.** Discovering that a
+   questionable line follows a repo-wide idiom explains its origin, not
+   its necessity. Check whether sibling packages pair the idiom with the
+   thing your fix adds; if none do, the idiom line is redundant in your
+   patch and should go (case study: `configure_file(${CURRENT_BINARY_DIR})`
+   staging removed alongside `install(DIRECTORY data ...)` in Offline
+   PR #1914 — the reviewer had to request what the original review
+   already prescribed).
+4. **Minimal diff means no unrelated changes** — it does not mean
+   dropping in-scope parts of the prescription that touch adjacent
+   lines.
