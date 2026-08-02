@@ -1,9 +1,9 @@
 ---
 name: post-pr-review
-description: Publish a staged PR review (from ~/pr_reviews/) to GitHub as a formal review or comment. Use after /reviewing-pull-requests has staged a review and the user asks to post it. Enforces a staleness gate, decision-to-event mapping, and a duplicate check before anything is sent.
+description: Publish a locally drafted PR review to GitHub as a formal review or comment. Use after /reviewing-pull-requests has staged a draft and the user asks to post it. Enforces a staleness gate, decision-to-event mapping, and a duplicate check before anything is sent.
 compatibility: Requires gh CLI authenticated with review permission on the target repo
 metadata:
-  version: "1.0.0"
+  version: "1.0.1"
   last-updated: "2026-08-01"
 ---
 
@@ -21,15 +21,18 @@ skill IS the user's go-ahead to post — but only if the gates pass.
 /post-pr-review <PR URL or owner/repo#N> [comment|approve|request-changes] [review-file] [--allow-duplicate] [--force-stale]
 ```
 
-- Review file defaults to `~/pr_reviews/pr<N>_review.md`.
+- Review file defaults to `$PR_REVIEW_DIR/pr<N>_review.md`, where
+  `$PR_REVIEW_DIR` falls back to `~/pr_reviews` if unset. The directory
+  is a personal drafting location, not shared state — see "Why a local
+  draft" below.
 - The event defaults to the review's own Decision line (see mapping);
   an explicit event argument overrides it.
 
 ## Workflow
 
-1. **Locate the review file.** Default `~/pr_reviews/pr<N>_review.md`.
-   Missing file → stop and report (do not synthesize a review here;
-   that is `/reviewing-pull-requests`' job).
+1. **Locate the review file.** Default `$PR_REVIEW_DIR/pr<N>_review.md`
+   (fallback `~/pr_reviews/`). Missing file → stop and report (do not
+   synthesize a review here; that is `/reviewing-pull-requests`' job).
 
 2. **Staleness gate.** Extract the head SHA from the review's
    "Reviewed at head `<sha>`" line and compare with the live PR head
@@ -63,6 +66,16 @@ skill IS the user's go-ahead to post — but only if the gates pass.
 
 6. **Report** the posted review URL, the event used, and which gates
    were overridden (if any).
+
+## Why a local draft at all
+
+Everything durable in this workflow is GitHub-to-GitHub: once posted,
+the review on the PR is the canonical record, and re-reviews read prior
+findings from the PR itself (see reviewing-pull-requests, "Re-Reviews
+and Carry-Forward"). The local file exists only for the drafting stage
+— so a human can read and edit the review with ordinary tools before
+anything becomes visible on the PR. It is per-user scratch space, never
+shared state, and disposable after posting.
 
 ## Hard rules
 
