@@ -3,8 +3,8 @@ name: reviewing-pull-requests
 description: Perform effective code review for Mu2e pull requests. Use when reviewing PRs, assessing risk, checking cross-repo impacts, validating tests/builds, and producing actionable reviewer feedback with severity and evidence.
 compatibility: Requires git access, Mu2e offline context, and ability to run targeted checks when needed
 metadata:
-  version: "1.2.0"
-  last-updated: "2026-03-06"
+  version: "1.6.1"
+  last-updated: "2026-08-01"
 ---
 
 # Reviewing Pull Requests
@@ -89,6 +89,34 @@ using Parameters = art::EDProducer::Table<Config>;
 - Is the change minimal and focused?
 - Is naming clear and consistent with nearby code?
 - Are assumptions documented where non-obvious?
+
+### 6) Simplification and efficiency (never gates approval)
+
+Review the changed code through a simplify/optimize lens and report —
+do not apply — opportunities as findings:
+
+- **Dead or write-only state**: members, config knobs, or containers
+  written but never read; per-event or per-subrun work whose product
+  nothing consumes.
+- **Duplication with an existing single home**: logic re-implemented
+  where a shared helper, accessor, or prolog table already exists —
+  grep for the existing home before suggesting a new one.
+- **Work at the wrong cadence**: per-event computation of
+  subrun/job-constant values; repeated lookups hoistable out of hot
+  loops.
+- **Complexity without payoff**: a simpler idiom with identical
+  behavior — especially one that derives a value from an invariant
+  instead of reconstructing it through a fragile chain.
+
+Severity cap: 🟡 [S2] when the complexity hides risk or real cost,
+⚪ [S3] otherwise. These findings NEVER gate the decision — "avoid
+requiring unrelated cleanup for approval" applies in full; a review
+that is otherwise 🟢 approve stays 🟢.
+
+Examples from practice: a write-only `std::set` rebuilt every subrun
+after its only reader was removed (Offline #1908); replacing a fragile
+positional cluster↔MC pairing with `cluster.diskID()` — simpler AND
+removes the failure mode (Offline #1911).
 
 ---
 
@@ -192,10 +220,19 @@ Reviewer check:
 
 ## Severity Levels
 
-- **S0 Blocker**: incorrect behavior, data corruption, crash, invalid configuration, or missing required cross-repo change.
-- **S1 Major**: high-likelihood bug/regression or incomplete validation for risky change.
-- **S2 Minor**: maintainability/readability issue with low immediate risk.
-- **S3 Nit**: style/format/comment-only suggestion.
+Pair each severity tag with a colored circle so findings scan at a glance
+(GitHub renders these natively):
+
+- 🔴 **S0 Blocker**: incorrect behavior, data corruption, crash, invalid configuration, or missing required cross-repo change.
+- 🟠 **S1 Major**: high-likelihood bug/regression or incomplete validation for risky change.
+- 🟡 **S2 Minor**: maintainability/readability issue with low immediate risk.
+- ⚪ **S3 Nit**: style/format/comment-only suggestion.
+- 🟢 marks verified-correct material and the approve decision — use it on
+  "checked, no action needed" items so green sections read as cleared,
+  not skipped.
+
+Lead every finding title with its circle + tag (`🟠 [S1] ...`) and the
+Decision line with 🔴 (request changes), 🟡 (comment), or 🟢 (approve).
 
 Only raise severity when evidence supports it.
 
@@ -231,18 +268,18 @@ Use these concise prompts:
 ### PR Review Summary
 
 **Decision**
-- <approve | request changes | comment only>
+- <🟢 approve | 🔴 request changes | 🟡 comment only>
 
 **Scope understood**
 - <1-3 bullets>
 
 **Findings**
-1. [S0|S1|S2|S3] <title>
+1. <🔴|🟠|🟡|⚪> [S0|S1|S2|S3] <title>
    - Evidence: <file/behavior/command>
    - Impact: <why it matters>
    - Suggested fix: <concrete change>
 
-2. [Sx] ...
+2. <circle> [Sx] ...
 
 **Validation check**
 - Build/tests run: <yes/no + commands>
@@ -295,3 +332,71 @@ For PRs touching `.fcl` composition, include checks that:
 - dotted epilog overrides resolve as expected,
 - include resolution via `FHICL_FILE_PATH` is valid,
 - `fhicl-dump -a` provenance confirms final values.
+
+---
+
+## Re-Reviews and Carry-Forward
+
+When a review of this PR already exists, load it BEFORE reviewing and
+account for every prior finding in the new review. Prior findings never
+silently vanish.
+
+Sources, in order of authority:
+
+1. **Reviews and comments posted on the PR itself** — the canonical
+   record. This keeps the loop GitHub-to-GitHub: it works for any
+   reviewer on any machine, and it covers other reviewers' change
+   requests, not just your own.
+2. **A locally staged draft** — consulted only for a review drafted but
+   not yet posted. The draft location is a personal scratch convention,
+   not part of the shared workflow: default `~/pr_reviews/pr<N>_review.md`,
+   overridable with `$PR_REVIEW_DIR`. Once a review is posted, the PR
+   carries the record and the local draft is disposable.
+
+Classify each prior finding against the new head:
+
+- **FIXED** — verify the fix at the same evidence bar as a new finding
+  (do not trust the commit message; an author's "fixed" commit can
+  implement half the prescription — see From Review to Fix). Then move
+  it to the verified section as `🟢 [was Sx] ... — FIXED in <sha>,
+  verified`.
+- **UNADDRESSED** — carry forward at the original severity, marked
+  "carried over". Unresolved 🔴/🟠 lead the findings list of the new
+  review.
+- **PARTIAL** — state exactly which part remains open; keep the
+  original severity unless the remaining part is genuinely lower.
+- **WITHDRAWN** — only with new evidence; state explicitly what changed
+  the assessment.
+
+Scope of the re-review pass: diff `<previously-reviewed-head>..<new
+head>` — but re-verify any prior finding whose evidence the delta
+touches, and any prior finding in files the delta did NOT touch stays
+open by definition. Include other reviewers' requested changes in the
+accounting (addressed or not), not just your own.
+
+---
+
+## From Review to Fix
+
+When authoring a patch that implements a finding from one of your own
+reviews (yours or a colleague's):
+
+1. **Re-read the finding's full prescription before writing the patch.**
+   Implement all of it. A review that says "replace X with Y" is not
+   implemented by "add Y" — the removal of X was part of the finding.
+2. **State deliberate omissions in the PR body.** If you intentionally
+   narrow the fix (hotfix urgency, risk control), write "deliberately
+   not touching X because ..." so the reviewer sees a decision, not an
+   oversight. Silent deltas between the review and the patch cost a
+   review round-trip at best.
+3. **"Established idiom" is not a keep-reason.** Discovering that a
+   questionable line follows a repo-wide idiom explains its origin, not
+   its necessity. Check whether sibling packages pair the idiom with the
+   thing your fix adds; if none do, the idiom line is redundant in your
+   patch and should go (case study: `configure_file(${CURRENT_BINARY_DIR})`
+   staging removed alongside `install(DIRECTORY data ...)` in Offline
+   PR #1914 — the reviewer had to request what the original review
+   already prescribed).
+4. **Minimal diff means no unrelated changes** — it does not mean
+   dropping in-scope parts of the prescription that touch adjacent
+   lines.
