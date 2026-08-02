@@ -3,7 +3,7 @@ name: reviewing-pull-requests
 description: Perform effective code review for Mu2e pull requests. Use when reviewing PRs, assessing risk, checking cross-repo impacts, validating tests/builds, and producing actionable reviewer feedback with severity and evidence.
 compatibility: Requires git access, Mu2e offline context, and ability to run targeted checks when needed
 metadata:
-  version: "1.5.0"
+  version: "1.6.0"
   last-updated: "2026-08-01"
 ---
 
@@ -89,6 +89,34 @@ using Parameters = art::EDProducer::Table<Config>;
 - Is the change minimal and focused?
 - Is naming clear and consistent with nearby code?
 - Are assumptions documented where non-obvious?
+
+### 6) Simplification and efficiency (never gates approval)
+
+Review the changed code through a simplify/optimize lens and report —
+do not apply — opportunities as findings:
+
+- **Dead or write-only state**: members, config knobs, or containers
+  written but never read; per-event or per-subrun work whose product
+  nothing consumes.
+- **Duplication with an existing single home**: logic re-implemented
+  where a shared helper, accessor, or prolog table already exists —
+  grep for the existing home before suggesting a new one.
+- **Work at the wrong cadence**: per-event computation of
+  subrun/job-constant values; repeated lookups hoistable out of hot
+  loops.
+- **Complexity without payoff**: a simpler idiom with identical
+  behavior — especially one that derives a value from an invariant
+  instead of reconstructing it through a fragile chain.
+
+Severity cap: 🟡 [S2] when the complexity hides risk or real cost,
+⚪ [S3] otherwise. These findings NEVER gate the decision — "avoid
+requiring unrelated cleanup for approval" applies in full; a review
+that is otherwise 🟢 approve stays 🟢.
+
+Examples from practice: a write-only `std::set` rebuilt every subrun
+after its only reader was removed (Offline #1908); replacing a fragile
+positional cluster↔MC pairing with `cluster.diskID()` — simpler AND
+removes the failure mode (Offline #1911).
 
 ---
 
