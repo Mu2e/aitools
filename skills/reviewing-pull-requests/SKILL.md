@@ -3,7 +3,7 @@ name: reviewing-pull-requests
 description: Perform effective code review for Mu2e pull requests. Use when reviewing PRs, assessing risk, checking cross-repo impacts, validating tests/builds, and producing actionable reviewer feedback with severity and evidence.
 compatibility: Requires git access, Mu2e offline context, and ability to run targeted checks when needed
 metadata:
-  version: "1.6.0"
+  version: "1.6.1"
   last-updated: "2026-08-01"
 ---
 
@@ -337,10 +337,21 @@ For PRs touching `.fcl` composition, include checks that:
 
 ## Re-Reviews and Carry-Forward
 
-When a review of this PR already exists — a staged file in
-`~/pr_reviews/pr<N>_review.md`, a posted review, or another reviewer's
-change requests — load it BEFORE reviewing, and account for every prior
-finding in the new review. Prior findings never silently vanish.
+When a review of this PR already exists, load it BEFORE reviewing and
+account for every prior finding in the new review. Prior findings never
+silently vanish.
+
+Sources, in order of authority:
+
+1. **Reviews and comments posted on the PR itself** — the canonical
+   record. This keeps the loop GitHub-to-GitHub: it works for any
+   reviewer on any machine, and it covers other reviewers' change
+   requests, not just your own.
+2. **A locally staged draft** — consulted only for a review drafted but
+   not yet posted. The draft location is a personal scratch convention,
+   not part of the shared workflow: default `~/pr_reviews/pr<N>_review.md`,
+   overridable with `$PR_REVIEW_DIR`. Once a review is posted, the PR
+   carries the record and the local draft is disposable.
 
 Classify each prior finding against the new head:
 
