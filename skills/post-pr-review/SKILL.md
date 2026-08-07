@@ -3,8 +3,8 @@ name: post-pr-review
 description: Publish a locally drafted PR review to GitHub as a formal review or comment. Use after /reviewing-pull-requests has staged a draft and the user asks to post it. Enforces a staleness gate, decision-to-event mapping, and a duplicate check before anything is sent.
 compatibility: Requires gh CLI authenticated with review permission on the target repo
 metadata:
-  version: "1.0.1"
-  last-updated: "2026-08-01"
+  version: "1.1.0"
+  last-updated: "2026-08-07"
 ---
 
 # Post PR Review
@@ -14,6 +14,14 @@ metadata:
 Publish a review staged by `/reviewing-pull-requests` to the GitHub PR,
 fail-closed: every gate must pass before `gh` is invoked. Invoking this
 skill IS the user's go-ahead to post — but only if the gates pass.
+
+As of reviewing-pull-requests v1.7.0 that skill can post its own review
+at the end of the run, when `PR_REVIEW_AUTOPOST` is set or the request
+says to post. That is opt-in, so for most users this skill remains the
+normal way a review reaches GitHub. Use it to publish a staged draft, to
+post one staged in an earlier session, to re-post after editing, or to
+post a review whose automatic publish was suppressed (read-only context,
+moved head, duplicate hit).
 
 ## Arguments
 

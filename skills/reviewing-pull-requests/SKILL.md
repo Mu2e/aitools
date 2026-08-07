@@ -3,8 +3,8 @@ name: reviewing-pull-requests
 description: Perform effective code review for Mu2e pull requests. Use when reviewing PRs, assessing risk, checking cross-repo impacts, validating tests/builds, and producing actionable reviewer feedback with severity and evidence.
 compatibility: Requires git access, Mu2e offline context, and ability to run targeted checks when needed
 metadata:
-  version: "1.6.1"
-  last-updated: "2026-08-01"
+  version: "1.7.0"
+  last-updated: "2026-08-07"
 ---
 
 # Reviewing Pull Requests
@@ -215,6 +215,89 @@ Reviewer check:
 5. **Verify evidence** (tests/build commands and outputs).
 6. **Report findings** with severity, evidence, and suggested fix.
 7. **Summarize residual risk** and approve/request changes accordingly.
+8. **Publish the review** per "Publishing the Review" below — posted
+   automatically where auto-post is enabled, staged and reported where
+   it is not.
+
+---
+
+## Publishing the Review
+
+A review is drafted to a local file under `$PR_REVIEW_DIR` (fallback
+`~/pr_reviews/`) so it can be written, re-read and corrected with
+ordinary tools before anyone sees it. Whether that draft is then posted
+automatically depends on opt-in.
+
+### Enabling auto-post
+
+**Default: draft only.** Publishing a review writes to a colleague's PR
+under the invoking user's name, so it is not something a skill update
+should switch on for someone. Check once per run:
+
+```
+printenv PR_REVIEW_AUTOPOST
+```
+
+Auto-post is enabled when that is `1`/`true`, or when the invoking
+instruction says to post (a scheduled sweep or an explicit "review and
+post" request). Otherwise finish at the staged draft, report its path,
+and tell the user `/post-pr-review <N>` publishes it.
+
+To opt in permanently, `export PR_REVIEW_AUTOPOST=1` in your shell
+profile. To opt in for one review, ask for "review and post".
+
+### Gates
+
+Posting is **fail-closed**: every gate below must pass before `gh` is
+invoked. A failed gate means stop and report, not post-anyway.
+
+1. **Naming gate.** The draft's own header must name the PR being
+   posted to, repo included (`Mu2e/<repo>#<N>`). Never post to a PR the
+   review file does not name. Draft filenames are repo-qualified —
+   `<repo-lowercase>_pr<N>_review.md` — because PR numbers collide
+   across repos and a bare `pr7_review.md` is ambiguous.
+2. **Staleness gate.** The draft's "Reviewed at head `<sha>`" must equal
+   the live head (`gh api repos/<owner>/<repo>/pulls/<N> --jq .head.sha`).
+   If the head moved while reviewing, re-verify against the new head and
+   rewrite the draft — do not post a review of code that is gone.
+3. **Decision mapping.** 🔴 → `--request-changes`, 🟡 → `--comment`,
+   🟢 → `--approve`. Ambiguous or missing Decision line → stop and ask.
+   Never post an event stronger than the Decision line states.
+4. **Duplicate gate.** Search existing reviews and comments for the
+   draft's header line and first finding headline. A hit means the
+   content is already on the PR — post only the delta, or nothing.
+
+Then:
+
+```
+gh pr review <N> --repo <owner>/<repo> --<event> --body-file <file>
+```
+
+The body is posted **verbatim**. If it needs changing, edit the file and
+re-post; never rewrite the text at post time.
+
+Report the posted review URL, the event used, and any gate that had to
+be overridden.
+
+`/post-pr-review` still exists for posting a draft that was staged in an
+earlier session, or re-posting after edits. It is no longer a required
+second step.
+
+### When NOT to post
+
+Posting is a write to a shared, externally-visible record. It is
+suppressed — draft only, report the path — whenever:
+
+- Auto-post is not enabled (see above). This is the default.
+- The invoking instruction says GitHub access is read-only, or says not
+  to post. An explicit instruction always wins over this skill, in both
+  directions.
+- The review is of something with no PR to post to — a release tag, a
+  branch, a local diff.
+- The PR is not the user's to review under the current credentials, or
+  `gh` is unauthenticated.
+
+In those cases stage the draft, say where it is, and stop.
 
 ---
 
