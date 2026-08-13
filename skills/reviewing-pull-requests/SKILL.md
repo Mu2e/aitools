@@ -3,8 +3,8 @@ name: reviewing-pull-requests
 description: Perform effective code review for Mu2e pull requests. Use when reviewing PRs, assessing risk, checking cross-repo impacts, validating tests/builds, and producing actionable reviewer feedback with severity and evidence.
 compatibility: Requires git access, Mu2e offline context, and ability to run targeted checks when needed
 metadata:
-  version: "1.6.1"
-  last-updated: "2026-08-01"
+  version: "1.8.0"
+  last-updated: "2026-08-08"
 ---
 
 # Reviewing Pull Requests
@@ -212,9 +212,154 @@ Reviewer check:
   - Provide a meaningful PR description (intent, scope, and validation summary).
 3. **Scan changed files** for high-risk categories (interfaces, config, data products, paths).
 4. **Check contracts** (code <-> FHiCL <-> job config).
-5. **Verify evidence** (tests/build commands and outputs).
+5. **Verify evidence** (tests/build commands and outputs). If the PR
+   needs a CI run that does not exist at the current head, trigger one
+   per "Triggering a CI Build" below.
 6. **Report findings** with severity, evidence, and suggested fix.
 7. **Summarize residual risk** and approve/request changes accordingly.
+8. **Publish the review** per "Publishing the Review" below — posted
+   automatically where auto-post is enabled, staged and reported where
+   it is not.
+
+---
+
+## Publishing the Review
+
+A review is drafted to a local file under `$PR_REVIEW_DIR` (fallback
+`~/pr_reviews/`) so it can be written, re-read and corrected with
+ordinary tools before anyone sees it. Whether that draft is then posted
+automatically depends on opt-in.
+
+### Enabling auto-post
+
+**Default: draft only.** Publishing a review writes to a colleague's PR
+under the invoking user's name, so it is not something a skill update
+should switch on for someone. Check once per run:
+
+```
+printenv PR_REVIEW_AUTOPOST
+```
+
+Auto-post is enabled when that is `1`/`true`, or when the invoking
+instruction says to post (a scheduled sweep or an explicit "review and
+post" request). Otherwise finish at the staged draft, report its path,
+and tell the user `/post-pr-review <N>` publishes it.
+
+To opt in permanently, `export PR_REVIEW_AUTOPOST=1` in your shell
+profile. To opt in for one review, ask for "review and post".
+
+### Gates
+
+Posting is **fail-closed**: every gate below must pass before `gh` is
+invoked. A failed gate means stop and report, not post-anyway.
+
+1. **Naming gate.** The draft's own header must name the PR being
+   posted to, repo included (`Mu2e/<repo>#<N>`). Never post to a PR the
+   review file does not name. Draft filenames are repo-qualified —
+   `<repo-lowercase>_pr<N>_review.md` — because PR numbers collide
+   across repos and a bare `pr7_review.md` is ambiguous.
+2. **Staleness gate.** The draft's "Reviewed at head `<sha>`" must equal
+   the live head (`gh api repos/<owner>/<repo>/pulls/<N> --jq .head.sha`).
+   If the head moved while reviewing, re-verify against the new head and
+   rewrite the draft — do not post a review of code that is gone.
+3. **Decision mapping.** 🔴 → `--request-changes`, 🟡 → `--comment`,
+   🟢 → `--approve`. Ambiguous or missing Decision line → stop and ask.
+   Never post an event stronger than the Decision line states.
+4. **Duplicate gate.** Search existing reviews and comments for the
+   draft's header line and first finding headline. A hit means the
+   content is already on the PR — post only the delta, or nothing.
+
+Then:
+
+```
+gh pr review <N> --repo <owner>/<repo> --<event> --body-file <file>
+```
+
+The body is posted **verbatim**. If it needs changing, edit the file and
+re-post; never rewrite the text at post time.
+
+Report the posted review URL, the event used, and any gate that had to
+be overridden.
+
+`/post-pr-review` still exists for posting a draft that was staged in an
+earlier session, or re-posting after edits. It is no longer a required
+second step.
+
+### When NOT to post
+
+Posting is a write to a shared, externally-visible record. It is
+suppressed — draft only, report the path — whenever:
+
+- Auto-post is not enabled (see above). This is the default.
+- The invoking instruction says GitHub access is read-only, or says not
+  to post. An explicit instruction always wins over this skill, in both
+  directions.
+- The review is of something with no PR to post to — a release tag, a
+  branch, a local diff.
+- The PR is not the user's to review under the current credentials, or
+  `gh` is unauthenticated.
+
+In those cases stage the draft, say where it is, and stop.
+
+---
+
+## Triggering a CI Build
+
+A review that turns on "does it build" is worthless without a build at
+the head being reviewed. When there isn't one, ask FNALbuild for it:
+
+```
+gh pr comment <N> --repo Mu2e/<repo> --body "@FNALbuild run build test"
+```
+
+This is the **only** state-changing command besides the review itself
+that this skill authorizes. It does not extend to `gh pr edit`,
+`gh pr merge`, `gh pr close`, `git push`, or any other comment.
+
+### Where it works
+
+**`Offline` and `Production` only.** FNALbuild does not watch the other
+seven skill-scope repos — it has ~1580 comments on Offline and ~449 on
+Production, and zero on EventNtuple, EventDisplay, DQM, Tutorial, PassN,
+RefAna and ArtAnalysis. Posting the phrase anywhere else is a no-op
+comment on someone's PR: noise, not a trigger. Check the repo before
+using it.
+
+Triggering needs `Mu2e/write` or `Mu2e/fnalbuild-users` membership, which
+FNALbuild states in its own opening comment on each PR. If the comment
+posts and no `:hourglass:` reply follows within a few minutes, the
+account lacks access — say so in the review and stop. Do not re-post.
+
+### When to trigger
+
+- **No result at the current head.** The head moved after the last run,
+  so the green (or red) on the PR describes code that is gone. This is
+  the common case and the one worth catching.
+- **FNALbuild said the result is stale** — "The HEAD of `main` has
+  changed ... Tests are now out of date."
+- **The last run failed for a reason unrelated to the diff** —
+  a broken `main`, a workspace/merge-conflict abort, an infrastructure
+  error. Confirm the failure is not caused by the diff first; see
+  "Offline PR red? check if MAIN broke" reasoning — read the failing
+  target and decide, do not re-trigger on a hunch.
+
+### When NOT to trigger
+
+- A run is already queued or in progress at the current head. Wait and
+  report it as pending; a second request just queues a duplicate.
+- The current head is already green. Re-running to "be sure" burns a
+  build slot shared by the whole collaboration.
+- The failure is real and caused by the diff. Re-running will reproduce
+  it. Report the failing target as a finding instead.
+- The invoking instruction forbids state-changing commands. A scheduled
+  sweep or a read-only instruction that says the review is the only
+  permitted write **wins over this section** — in that case do not
+  comment; record "needs a CI run at `<sha8>`" in the review and let a
+  human trigger it.
+
+**Once per review pass.** Trigger, then either wait for the result if the
+review depends on it, or post the review noting CI is pending at that
+head and say you triggered it. Never trigger twice in one pass.
 
 ---
 
