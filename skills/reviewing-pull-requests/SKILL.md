@@ -4,7 +4,7 @@ description: Perform effective code review for Mu2e pull requests. Use when revi
 compatibility: Requires git access, Mu2e offline context, and ability to run targeted checks when needed
 metadata:
   version: "2.0.0"
-  last-updated: "2026-08-11"
+  last-updated: "2026-08-13"
 ---
 
 # Reviewing Pull Requests
@@ -59,6 +59,12 @@ evidence for a physics change, acceptance criteria, a rollback path:
 - "Best practice reminder: please add a meaningful PR description including
   intent, scope, and validation evidence."
 
+**Reading the description.** Where descriptions are written carefully, their
+length tracks blast radius rather than diff size — a long one is itself a
+risk signal. Take an author's own hedge ("this part should be reviewed
+carefully, I am not sure ...") as the instruction it is: that is where to
+spend the effort.
+
 ---
 
 ## Review Workflow
@@ -73,7 +79,7 @@ evidence for a physics change, acceptance criteria, a rollback path:
 1. **Restate intent**, and check PR hygiene — single topic, meaningful
    description; use the reminders in Context Packet if either is missing.
 2. **Scan changed files** for high-risk categories (interfaces, config, data
-   products, paths), then read the profile matching the subsystem.
+   products, paths), then read the conventions matching the subsystem.
 3. **Check contracts** (code ↔ FHiCL ↔ job config) and cross-repo impact.
 4. **Verify evidence.** If no CI result exists at the current head, trigger
    one per "Triggering a CI Build".
@@ -104,13 +110,12 @@ than a missing one: it tells the next reviewer the item is cleared, so
 nobody looks again. When you cannot fully verify, say "not checked"
 rather than promoting a skim to green.
 
-Case study (#1916, the same PR as in Reviewer Profiles): the review 🟢'd
-`rowToCsv` as
-matching `TrkAlignElement` "exactly, including the trailing comma". The
-comma did match — but the sibling uses `setprecision(4)` for translations
-and `(6)` for rotations, while the PR used `(3)` for both, silently
-truncating rotations to milliradian. The verification stopped at the detail
-that had been questioned and never read the surrounding lines.
+The shape this takes: a review 🟢s a new CSV writer as matching its sibling
+"exactly, including the trailing comma". The comma does match — but the
+sibling sets `setprecision(4)` for translations and `(6)` for rotations,
+while the new code uses `(3)` for both, silently truncating rotations to
+milliradian. The check stopped at the detail that had been questioned and
+never read the surrounding lines.
 
 Lead every finding title with its circle + tag (`🟠 [S1] ...`) and the
 Decision line with 🔴 (request changes), 🟡 (comment), or 🟢 (approve).
@@ -144,9 +149,9 @@ Only raise severity when evidence supports it.
   skill has already produced a wrong 🔴 that way.
 - **Padding a review with weak findings is legible, and costs credibility.**
   Mu2e reviewers answer automated review comments point by point and grade
-  them on merit; @rlcee has called out both quality drift between models and
-  *"AI affirming AI"* — a verification pass that restates the finding it was
-  asked to check rather than testing it. Length is not thoroughness.
+  them on merit. Length is not thoroughness. Watch especially for a
+  verification pass that restates the finding it was asked to check instead
+  of testing it — agreement that adds no evidence is not confirmation.
 
 ---
 
@@ -256,20 +261,20 @@ Severity cap: 🟡 [S2] when the complexity hides risk or real cost,
 requiring unrelated cleanup for approval" applies in full; a review
 that is otherwise 🟢 approve stays 🟢.
 
-Examples from practice: a write-only `std::set` rebuilt every subrun
-after its only reader was removed (Offline #1908); replacing a fragile
-positional cluster↔MC pairing with `cluster.diskID()` — simpler AND
-removes the failure mode (Offline #1911).
+Typical shapes: a write-only `std::set` rebuilt every subrun after its
+only reader was removed; a fragile positional cluster↔MC pairing replaced
+by an explicit `diskID()` lookup — simpler *and* it removes the failure
+mode.
 
 ---
 
-## Reviewer Profiles
+## Subsystem Conventions
 
-Built from these three reviewers' complete Mu2e comment histories. Read
-only the profile matching the PR's subsystem; @kutschke's applies repo-wide.
-**Walk a list to decide what to look at, not what to write** — an item
-becomes a finding only when you can quote the offending line and state the
-consequence.
+Conventions this codebase holds to beyond the coding standard, grouped by
+the area they apply to. Read the group matching the PR's subsystem; the
+house rules apply repo-wide. **Walk a list to decide what to look at, not
+what to write** — an item becomes a finding only when you can quote the
+offending line and state the consequence.
 
 ### Copied boilerplate: diff against the majority, not the donor
 
@@ -289,39 +294,32 @@ from confirms only that the copy succeeded.
   least-tested code in the PR. Read the call-order contract in the base
   class rather than assuming the pattern is self-evidently right.
 
-Case study (#1916): `AlignedCalorimeterCache::makeIov` reads
-`_tadisk_p->iov()` without a preceding `get(eid)`. `DbHandle::iov()` is a
-plain accessor on `_liveTable`, which only `get()`/`getPtr()` refresh.
-`StrawResponseCache`, `CRVCalibCache`, `CRVStatusCache` and
-`STMEnergyCalibCache` all call `get(eid)` first; only `AlignedTrackerCache`
-— the donor, identified by the copy-pasted guard — omits it. The review
-compared against the donor, found agreement, and missed it. @rlcee flagged
-it directly ("missing the get") and ranked it above his other comments.
+The shape this takes: a conditions cache whose `makeIov` reads
+`handle->iov()` with no preceding `get(eid)`. `DbHandle::iov()` is a plain
+accessor on the live table, which only `get()`/`getPtr()` refresh. Four
+sibling caches call `get(eid)` first; only the donor — identified by its
+copy-pasted guard — omits it. A review that compares against the donor
+finds agreement and misses it.
 
-### @rlcee — DB, conditions, build and release
+### Database, conditions, build and release
 
-@rlcee owns `DbTables`, `DbService`, Proditions, `dbTool` and the
-build/release system, and is the repo's most prolific reviewer. On a PR
-touching any of those, walk this list **before** writing findings —
-everything on it is something he will otherwise ask for.
+Applies to `DbTables`, `DbService`, Proditions, `dbTool` and the
+build/release system. Walk this list before writing findings.
 
-Ordered by how often he actually raises it, because the weighting is the
-point: items 1-2 are live concerns, while items 10-11 and the
-`get()`/`iov()` pairing are once-in-seven-years findings that must not
-headline a review.
+Ordered by how often each actually comes up, because the weighting is the
+point: the first items are routine, the last are rare. A rare one is still
+worth fixing, but must not headline a review.
 
-1. **Naming — a generic name is a defect.** His most frequent ask by a wide
-   margin. A name encodes what the value *means and its constraints*, not
-   its type: `index` becomes `sequentialStrawIndex` if it must be dense,
-   ordered and unique. Variables start lowercase; capitals mean class names.
-   Schema names are effectively permanent — *"It would not be wildly
-   inconvenient at this time to change the cal schema to calo. It will be
-   ~impossible in the future."*
-2. **Dead code, leftovers, duplicates** — see Rules. Worth knowing that he
-   flags them even when they are harmless.
+1. **Naming — a generic name is a defect.** A name encodes what the value
+   *means and its constraints*, not its type: `index` becomes
+   `sequentialStrawIndex` if it must be dense, ordered and unique.
+   Variables start lowercase; capitals mean class names. Schema names are
+   effectively permanent — renaming a table is merely inconvenient now and
+   near-impossible once data exists, so get it right in the first commit.
+2. **Dead code, leftovers, duplicates** — see Rules. Flag them even when
+   they are harmless.
 3. **Never construct an expensive handle inside a loop** — hoist
-   `ProditionsHandle`/`DbHandle` to class members. His most durable rule,
-   unchanged 2019 → 2025.
+   `ProditionsHandle`/`DbHandle` to class members.
 4. **Production error handling: no `assert`, no bare `try`/`catch`, never
    `print`.** `cet::exception` with a category unique to that call site,
    reported through message facility; algorithm failures return a code.
@@ -337,29 +335,31 @@ headline a review.
 8. **Don't derive behaviour from incidental context** — deconstructing a file
    name in code to recover run conditions. Prefer self-describing data, or an
    explicit fcl parameter determined in the shell.
-9. **Build files must reflect real dependencies.** He will not accept an
-   untested trim of a link list.
+9. **Build files must reflect real dependencies.** An untested trim of a link
+   list is not acceptable.
 10. **Intentional precision in output** — `std::setprecision` chosen per
     quantity and commented, never copied across quantities of different
-    scale. That copy is exactly the #1916 mistake in the case study above.
+    scale. That copy is exactly the mistake in the 🟢-is-a-claim example
+    under Severity Levels.
 11. **Don't commit table data to the repo** — fcl can silently override it, so
     it can never be trusted in production.
 
-**Rules he will not compromise on** — where he digs in across several rounds:
+**Non-negotiable in this layer:**
 
 - **A uniform Proditions interface.** Every entity structured and interfaced
-  identically (`fromDb`/`fromFcl`). He explicitly leaves the *contents* to the
-  subsystem group and insists only on the shape, because divergence is what
-  makes maintenance expensive.
+  identically (`fromDb`/`fromFcl`). The *contents* belong to the subsystem
+  group; only the shape is fixed, because divergence is what makes
+  maintenance expensive.
 - **DB `Row`/`DbTable` classes never leak into user code.** Wrap them with
-  accessors; `CRVOrdinal` and `CaloDAQMap` are the cited precedents.
+  accessors; `CRVOrdinal` and `CaloDAQMap` are the precedents.
 - **Never cache a quantity derived from a DB quantity** — the time dependence
   is too easy to lose.
 - **Conditions accessed in event methods only**, never `beginRun`/`beginSubrun`.
-  This is on the CodingStandards wiki, so cite the standard, not him.
-- **`get()` before `iov()`/`cid()`** in a conditions cache — see the copied-boilerplate case study.
+  This is on the CodingStandards wiki — cite the standard.
+- **`get()` before `iov()`/`cid()`** in a conditions cache — see the
+  copied-boilerplate note above.
 - **Index columns dense, ordered, unique, and validated at load.**
-  `TstCalib1.hh` is the reference implementation he always points to.
+  `TstCalib1.hh` is the reference implementation.
 - **Class name mirrors the SQL name** (`CalSomething` ↔ `cal.something`,
   lowercase in Postgres) so a reader moves between them without a lookup.
   One class → one table, committed complete in one commit.
@@ -368,27 +368,14 @@ headline a review.
 - **Proditions only for genuine run dependence.** A constant does not belong
   in the database.
 
-Raise as a question, never as a defect: what `fromFcl` should do — zeros and
-fcl values, or a text path that exercises the DB code — is a live
-disagreement between him and other authors, not settled convention.
+Unsettled, so raise it as a question and never as a defect: what `fromFcl`
+should do — zeros and fcl values, or a text path that exercises the DB code.
 
-A third of his inline comments fall outside DB/conditions and include
-physics logic — do not assume a non-DB PR is outside his interest.
-
-When he is the **author** — he writes more PRs than anyone in the repo —
-the body is the map. Its length tracks blast radius rather than diff size,
-so a long description is itself a risk signal; new capability ships inert
-and is activated in a separate PR; compatibility is stated in both
-directions; merge-order coupling is named by PR number. And when he writes
-that a commit *"should be reviewed carefully because the code is complex
-and I do not know..."*, that sentence is where to spend your effort.
-
-### @gaponenko — simulation, geometry and job config
+### Simulation, geometry and job config
 
 Applies to `Mu2eG4`, `EventMixing`, `EventGenerator`, `Sources`,
 `JobConfig`, `Compression`, ExtMon, and the production/file-name tooling.
-Walk this list before writing findings; each item is a defect he will
-otherwise raise.
+Walk this list before writing findings; each item is a defect here.
 
 1. **No silent degradation.** Detecting a bad input and continuing is a
    defect, not robustness. A warning is not error handling — nobody reads
@@ -397,9 +384,8 @@ otherwise raise.
    undefined" as a convention, skipping bad records inside the class that
    should have rejected them. A constructor must either throw or leave a
    self-consistent object.
-2. **Unused anything** — see Rules. He reads it the most widely of the
-   three: typedefs used only by their own dictionary, link dependencies
-   nothing needs.
+2. **Unused anything** — see Rules. Read it widely here: typedefs used only
+   by their own dictionary, link dependencies nothing needs.
 3. **Unsourced numbers.** Any constant, spectrum table or material
    composition needs its origin in a comment — paper, datasheet, chemical
    formula, or the assumptions behind a mixture. A new data file with no
@@ -415,7 +401,7 @@ otherwise raise.
    numerator + denominator + efficiency; three typed members plus a
    `datatype` field. Store one, derive the rest.
 6. **Mixed-topic PR.** Unrelated changes in one PR are a blocking objection
-   for him regardless of whether each change is individually correct.
+   here regardless of whether each change is individually correct.
    Whitespace-only edits belong in their own PR.
 7. **fcl epilogs.** A forgotten prolog fails the job; a forgotten epilog
    silently does not. Defaults belong in prologs that a job config can
@@ -430,15 +416,12 @@ otherwise raise.
     dispatch instead. Instance names only when one module produces more
     than one collection of the same type.
 11. **Naming, const-correctness and copies, setters, uninitialized members,
-    C++ defaults on physics parameters** — the general rules below, which he
-    enforces consistently.
+    C++ defaults on physics parameters** — the general rules below, enforced
+    consistently here.
 
-### @kutschke — house rules, anywhere in Offline
+### House rules, anywhere in Offline
 
-Not subsystem-scoped: he reviewed across the whole repo, and these are the
-Mu2e house rules rather than one reviewer's taste. His last review was
-October 2024 and his last comment November 2024, so treat these as things to
-check yourself rather than things a reviewer will catch. Most restate one principle — **one authoritative
+Not subsystem-scoped. Most restate one principle — **one authoritative
 place for every fact** — so when a finding does not obviously fit an item
 below, ask how many places would need editing to change this one thing.
 
@@ -448,8 +431,8 @@ below, ask how many places would need editing to change this one thing.
    can change with time, or a `constexpr` in `DataProducts/inc` if it is
    fixed for all time. Ask what else needs to know this number — the same
    literal appearing in C++, fcl and python is the finding, not the literal.
-2. **Dead code** — see Rules, which states his version of it. His test for a
-   dead member: no accessor and no constructor argument.
+2. **Dead code** — see Rules. The test for a dead member: no accessor and no
+   constructor argument.
 3. **Copies nobody asked for.** Anything larger than a pointer passes by
    `const&`; pass the lowest-level object that does the job (`Straw const&`,
    not `Tracker const&`); dereference a `shared_ptr` once at the top of
@@ -457,7 +440,7 @@ below, ask how many places would need editing to change this one thing.
    pointer; an accessor returning an `int` returns by value, not `const&`.
 4. **Members initialized where they are declared.** `double x = 0.;` in the
    header beats the initializer list, which beats leaving it uninitialized.
-   His reason is maintenance, not safety: with several constructors it is
+   The reason is maintenance, not safety: with several constructors it is
    one place, and nothing gets missed when a member is added.
 5. **Symbolic names for anything with meaning.** `PDGCode::e_minus`, not
    `11`; ROOT's `kFullCrossX`, not `47`. Flow control on a string comparison
@@ -470,32 +453,24 @@ below, ask how many places would need editing to change this one thing.
 7. **fcl written by copy instead of by delta.** Job configs start from
    `@local::Services.Sim` (or `.Core`/`.SimAndReco`) and override; repeated
    near-identical blocks become one base table plus `@table::Base` variants.
-   For the `@nil`/`OptionalAtom` half of this, see @gaponenko item 4.
+   For the `@nil`/`OptionalAtom` half of this, see item 4 of the
+   simulation/geometry list.
 8. **A module touched but left on unvalidated FHiCL.** Converting is the
    standing ask whenever you are in the file anyway.
 9. **Data-product paperwork.** An entry in `classes_def.xml` *and*
    `art::Wrapper<T>` if it ever goes into the event singly; a default
    constructor, which ROOT requires; `operator<<` implemented in the `.cc`;
    an addition to `Print/`. Enums that reach a file are append-only —
-    inserting a value silently changes the meaning of data already written.
+   inserting a value silently changes the meaning of data already written.
 10. **Histograms inside a producer.** They belong in a separate analyzer
-   reading the data products, unless they monitor transient state that
-   never reaches a product — and then behind a fcl switch that can disable
-   creating and filling them.
+    reading the data products, unless they monitor transient state that
+    never reaches a product — and then behind a fcl switch that can disable
+    creating and filling them.
 11. **Fabricated values from bad input.** An invalid handle that yields a
-   default, which then feeds a histogram or a sum, produces wrong physics
-   with no error. Throw, or skip the event explicitly. Trigger code cannot
-   throw, so it logs — that is the only exception.
-12. **A PR doing two things.** He splits these on principle and has said he
-   intends to reject on those grounds alone.
-
-**His severity language is explicit — read it before recording a finding.**
-"Targets of opportunity", "for a future PR", "for future reference" and
-"your call" all mean non-blocking, and roughly one substantive comment in
-twenty carries one. He is also usually the merger, so an APPROVED carrying
-open inline comments means deferred, not unaddressed. Whitespace is his one
-exception — he blocked on it repeatedly — but it is CI's job to report, not
-yours; see the whitespace rule under Rules.
+    default, which then feeds a histogram or a sum, produces wrong physics
+    with no error. Throw, or skip the event explicitly. Trigger code cannot
+    throw, so it logs — that is the only exception.
+12. **A PR doing two things.** Split it; that alone is grounds for rejection.
 
 ## Rules
 
@@ -549,7 +524,8 @@ unless marked *(not on the wiki)*.
   `beginRun` risks caching a result that has subrun dependence, and in
   `beginSubrun` risks unnecessary loads on skimmed files. The run/subrun
   accessors were removed outright to enforce it, so on current code this is
-  a compile-time matter — but flag any workaround. See the @rlcee profile.)
+  a compile-time matter — but flag any workaround. See the database and
+  conditions list under Subsystem Conventions.)
 - Data-product classes must: work with persistency; keep the in-memory
   representation orthogonal to the persistent one and not be `TObject`s; be a
   POD or collection of PODs (may hold `art::Ptr<T>`/`std::vector<art::Ptr<T>>`);
@@ -598,7 +574,7 @@ unless marked *(not on the wiki)*.
 - Code must compile cleanly at the warning levels set by Mu2e software
   management, modulo a short list of external-product exceptions.
 
-**Dead code — the single home for a rule all three reviewers enforce**
+**Dead code — the single home for a rule enforced repo-wide**
 
 - **Delete it rather than keep it.** The full surface: an `#include` whose
   only user is gone; an fcl parameter nothing reads; a link-list entry
@@ -614,8 +590,8 @@ unless marked *(not on the wiki)*.
   and history comments.
 - **Physics-affecting fcl parameters carry no C++ default.** Only debug knobs
   (`verbosityLevel`, `diagLevel`) may default in code. *(Not on the wiki —
-  Mu2e policy per Offline#51 and long-standing practice stated independently
-  by @kutschke; attribute it rather than citing it as a standard.)*
+  long-standing Mu2e practice; raise it as convention, not as a standards
+  citation.)*
 
 ---
 
@@ -697,7 +673,8 @@ other in-scope repo with any — uses a bare `TrkInfo_HH`. Read a sibling
 header before calling a guard wrong.
 
 Default severity 🟡 [S2]; escalate only if a real collision or
-multiple-include bug is observed. Per 2b, a guard naming *another package*
+multiple-include bug is observed. Per the copied-boilerplate note under
+Subsystem Conventions, a guard naming *another package*
 is worth more as a signal to survey siblings for inherited copy-paste bugs
 than as a finding on its own.
 
@@ -865,27 +842,25 @@ they called important. Read the review *state*, not the comment volume: a
 long design critique submitted as APPROVED is not a blocked PR, and
 carrying it forward as one misreports the record.
 
-@rlcee is the clearest case and the one you will meet most often. He marks
-the tier explicitly — *"the missing get() is important, I think the rest
-are clarity or style"*, *"I won't hold up this pull based on my
-philosophical position"*, *"up to you"* — so his heaviest design critiques
-usually ship as APPROVED, and 23 of his 279 reviews request changes. Only
-two things make him block: **a concrete, checkable omission that breaks
-something at merge** (an unregistered table, a stray file committed, a
-leftover build rule), or **an unresolved architectural question in the
-layer he owns**. Never style, never naming preference, never food for
-thought. Take his ranking at face value in both directions.
+Reading another reviewer's record:
 
-@gaponenko needs the opposite reading. Most of his blocking items are
-questions, and an answer on the thread clears them — so check the replies
-before recording one as UNADDRESSED. But when he objects to a PR's *scope*
-he downgrades to COMMENT while staying unconvinced: that shows as no
-outstanding request and is one.
-
-@kutschke labels the tier in words — "targets of opportunity", "for a
-future PR", "your call" — so take the label and do not carry those forward
-as open. He was also usually the merger, which makes his APPROVED-with-open-
-comments the normal shape of a deferred request rather than an oversight.
+- **Severity is usually stated in words.** *"the missing get() is important,
+  I think the rest are clarity or style"*, *"targets of opportunity"*, *"for
+  a future PR"*, *"I won't hold up this pull"*, *"your call"* — all mean
+  non-blocking, and the ranking is meant literally in both directions. Do
+  not carry those forward as open.
+- **A heavy design critique often ships as APPROVED.** What actually blocks
+  is a concrete, checkable omission that breaks something at merge — an
+  unregistered table, a stray committed file, a leftover build rule — or an
+  unresolved architectural question in a layer someone owns. Style, naming
+  preference and food for thought do not block.
+- **Blocking items phrased as questions are cleared by an answer on the
+  thread.** Check the replies before recording one as UNADDRESSED.
+- **An objection to a PR's *scope* is often filed as COMMENT while the
+  reviewer stays unconvinced.** That shows as no outstanding request and is
+  one.
+- **APPROVED carrying open inline comments usually means deferred**, not
+  unaddressed — especially when the approver is also the merger.
 
 
 Classify each prior finding against the new head:
@@ -923,6 +898,6 @@ Applies only when you are authoring the patch, not reviewing one.
 3. **"Established idiom" is not a keep-reason.** That a questionable line
    follows a repo-wide idiom explains its origin, not its necessity. Check
    whether siblings pair the idiom with what your fix adds; if none do, it
-   goes. (Offline #1914: `configure_file(${CURRENT_BINARY_DIR})` staging had
-   to be removed alongside `install(DIRECTORY data ...)` — the reviewer had
-   to re-request what the original review already prescribed.)
+   goes. A build-time `configure_file` staging copy left in place beside a
+   newly added `install(DIRECTORY data ...)` rule is the standard shape of
+   this: the reviewer has to re-request what the review already prescribed.
