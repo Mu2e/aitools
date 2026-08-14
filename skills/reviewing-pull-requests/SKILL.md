@@ -153,6 +153,11 @@ Only raise severity when evidence supports it.
   them on merit. Length is not thoroughness. Watch especially for a
   verification pass that restates the finding it was asked to check instead
   of testing it — agreement that adds no evidence is not confirmation.
+- **Find out what CI already verified before verifying anything yourself.**
+  See "What buildtest already covers" — most of those checks have no status
+  context, so it is easy to conclude a check does not exist when it ran and
+  passed. Do not hand-roll a substitute for one: it is slower, narrower, and
+  can be confidently wrong in ways you will not notice.
 
 ---
 
@@ -748,6 +753,43 @@ gh pr comment <N> --repo Mu2e/<repo> --body "@FNALbuild run build test"
 This is the **only** state-changing command besides the review itself
 that this skill authorizes. It does not extend to `gh pr edit`,
 `gh pr merge`, `gh pr close`, `git push`, or any other comment.
+
+### What buildtest already covers — read the table, not the statuses
+
+`mu2e/buildtest` is not one test, it is about twenty, and most have **no
+separate commit-status context**. The statuses API returns roughly eleven
+contexts; FNALbuild's result table lists the rest. Read the table. Reading
+statuses alone will tell you a check does not exist when in fact it ran and
+passed.
+
+Running inside `buildtest`, invisible to the statuses API:
+
+- **`g4surfaceCheck`** — `mu2e -c Offline/Mu2eG4/fcl/surfaceCheck.fcl`, the
+  Geant4 overlap check over the entire geometry. Graded on log content, not
+  exit code: it fails when `grep 'Checking overlaps for volume' | grep -v OK`
+  is non-empty, with a `LEGAL > 0` guard so a run that checked nothing cannot
+  pass vacuously.
+- **`rootOverlaps`** — an independent overlap check via ROOT.
+- `ceMix`, `ceSteps`, `ceDigi`, `muDauSteps`, `check_cmake`, `trigger`.
+- the whitespace check, clang-tidy, and the FIXME/TODO count.
+
+**Do not re-derive what these already prove, and never ask an author to run
+one of them.** A geometry PR with `g4surfaceCheck` and `rootOverlaps` green has
+been checked across the whole geometry — dirt, detector and rotated volumes
+included, at G4's own tolerances. Writing your own analysis of the same
+question is slower, narrower, and wrong in ways that do not announce
+themselves: a scan that silently drops whole classes of volume still reports
+"no overlaps", which reads exactly like verification. This skill has already
+shipped a 🟢 claiming "every active hall volume" from a scan that covered one
+of the four families the geometry loads.
+
+If you run an independent check anyway, it is a cross-check of CI, never the
+evidence. Say which it is, and do not let it upgrade a finding CI has settled.
+
+Job lists live in `Mu2e/codetools`
+(`bin/github/jenkins_tests/mu2e-offline-build-test/job.sh` — `JOBNAMES` and
+`ADDITIONAL_JOBNAMES`); the test vocabulary is `Mu2e/CI`
+(`Mu2eCI/test_suites.py`).
 
 ### Where it works
 
