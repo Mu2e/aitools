@@ -86,8 +86,9 @@ spend the effort.
    one per "Triggering a CI Build".
 5. **Record findings** with severity and evidence, and summarize residual
    risk — per Severity Levels, Evidence Rules and the Output Template above.
-6. **Publish** per "Publishing the Review": posted where auto-post is
-   enabled, staged and reported where it is not.
+6. **Tighten, then publish** per "Publishing the Review": cut the draft
+   against the tightening pass, then post it where auto-post is enabled,
+   or stage it and report the path where it is not.
 
 ---
 
@@ -683,6 +684,34 @@ and tell the user `/post-pr-review <N>` publishes it.
 
 To opt in permanently, `export PR_REVIEW_AUTOPOST=1` in your shell
 profile. To opt in for one review, ask for "review and post".
+
+### Tightening pass — before the gates
+
+A draft is finished when it has been cut, not when it has been written.
+Reread it once against this list and edit the file. This is a drafting
+step: by the time the gates run the file is final, and the body posts
+verbatim.
+
+- **Cut any finding that restates rather than proves.** If the Evidence
+  line only rephrases the title, there is no finding — delete it, or go
+  get the evidence.
+- **Collapse ⚪ and 🟡 to one or two lines** — the evidence and the
+  concrete fix. Drop the Impact paragraph unless the impact is
+  non-obvious. The full three-part shape is for 🔴 and 🟠, where someone
+  has to be convinced to act.
+- **Delete residual-risk bullets describing work you should not have
+  done.** Caveating your own substitute for a check the project already
+  runs advertises the mistake instead of removing it. Cut the analysis,
+  not just the caveat.
+- **Cut 🟢s that restate the PR description.** A 🟢 is a check you ran; if
+  it names no file, number or command, it is a summary, not a claim.
+- **Length tracks blast radius, not effort spent.** A seven-file geometry
+  PR does not earn a longer review than a subsystem rewrite because you
+  happened to spend longer on it.
+- **Write ordinary prose.** A review body goes to collaborators who did
+  not opt into whatever compressed conversational style is in effect in
+  your session — full sentences, no telegraphic fragments. Same rule as
+  commit messages and documentation.
 
 ### Gates
 
