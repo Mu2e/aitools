@@ -3,7 +3,7 @@ name: post-pr-review
 description: Publish a locally drafted PR review to GitHub as a formal review or comment. Use after /reviewing-pull-requests has staged a draft and the user asks to post it. Enforces a staleness gate, decision-to-event mapping, and a duplicate check before anything is sent.
 compatibility: Requires gh CLI authenticated with review permission on the target repo
 metadata:
-  version: "1.1.0"
+  version: "1.2.0"
   last-updated: "2026-08-07"
 ---
 
@@ -29,18 +29,23 @@ moved head, duplicate hit).
 /post-pr-review <PR URL or owner/repo#N> [comment|approve|request-changes] [review-file] [--allow-duplicate] [--force-stale]
 ```
 
-- Review file defaults to `$PR_REVIEW_DIR/pr<N>_review.md`, where
-  `$PR_REVIEW_DIR` falls back to `~/pr_reviews` if unset. The directory
-  is a personal drafting location, not shared state — see "Why a local
-  draft" below.
+- Review file defaults to `$PR_REVIEW_DIR/<repo-lowercase>_pr<N>_review.md`,
+  where `$PR_REVIEW_DIR` falls back to `~/pr_reviews` if unset. The name is
+  repo-qualified because PR numbers collide across repos; a bare
+  `pr7_review.md` is ambiguous. For back-compatibility, fall back to
+  `pr<N>_review.md` if the qualified name is absent. The directory is a
+  personal drafting location, not shared state — see "Why a local draft"
+  below.
 - The event defaults to the review's own Decision line (see mapping);
   an explicit event argument overrides it.
 
 ## Workflow
 
-1. **Locate the review file.** Default `$PR_REVIEW_DIR/pr<N>_review.md`
-   (fallback `~/pr_reviews/`). Missing file → stop and report (do not
-   synthesize a review here; that is `/reviewing-pull-requests`' job).
+1. **Locate the review file.** Default
+   `$PR_REVIEW_DIR/<repo-lowercase>_pr<N>_review.md`, then the unqualified
+   `pr<N>_review.md` (both under `~/pr_reviews/` if `$PR_REVIEW_DIR` is
+   unset). Missing file → stop and report (do not synthesize a review here;
+   that is `/reviewing-pull-requests`' job).
 
 2. **Staleness gate.** Extract the head SHA from the review's
    "Reviewed at head `<sha>`" line and compare with the live PR head
