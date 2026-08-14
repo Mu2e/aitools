@@ -79,7 +79,8 @@ spend the effort.
 1. **Restate intent**, and check PR hygiene — single topic, meaningful
    description; use the reminders in Context Packet if either is missing.
 2. **Scan changed files** for high-risk categories (interfaces, config, data
-   products, paths), then read the conventions matching the subsystem.
+   products, paths), then walk the house rules under Subsystem Conventions —
+   plus the database/conditions list if the PR touches that layer.
 3. **Check contracts** (code ↔ FHiCL ↔ job config) and cross-repo impact.
 4. **Verify evidence.** If no CI result exists at the current head, trigger
    one per "Triggering a CI Build".
@@ -270,11 +271,13 @@ mode.
 
 ## Subsystem Conventions
 
-Conventions this codebase holds to beyond the coding standard, grouped by
-the area they apply to. Read the group matching the PR's subsystem; the
-house rules apply repo-wide. **Walk a list to decide what to look at, not
-what to write** — an item becomes a finding only when you can quote the
-offending line and state the consequence.
+Conventions this codebase holds to beyond the coding standard. Nearly all of
+them are global; only the database/conditions layer has a set that is
+genuinely local to it. **Walk a list to decide what to look at, not what to
+write** — an item becomes a finding only when you can quote the offending
+line and state the consequence. Frequency matters too: the routine items are
+worth checking every time, and a rare one is still worth fixing but must not
+headline a review.
 
 ### Copied boilerplate: diff against the majority, not the donor
 
@@ -301,51 +304,124 @@ sibling caches call `get(eid)` first; only the donor — identified by its
 copy-pasted guard — omits it. A review that compares against the donor
 finds agreement and misses it.
 
-### Database, conditions, build and release
+### House rules, anywhere in Offline
 
-Applies to `DbTables`, `DbService`, Proditions, `dbTool` and the
-build/release system. Walk this list before writing findings.
-
-Ordered by how often each actually comes up, because the weighting is the
-point: the first items are routine, the last are rare. A rare one is still
-worth fixing, but must not headline a review.
+Most restate one principle — **one authoritative place for every fact** —
+so when a finding does not obviously fit an item below, ask how many places
+would need editing to change this one thing.
 
 1. **Naming — a generic name is a defect.** A name encodes what the value
    *means and its constraints*, not its type: `index` becomes
    `sequentialStrawIndex` if it must be dense, ordered and unique.
-   Variables start lowercase; capitals mean class names. Schema names are
-   effectively permanent — renaming a table is merely inconvenient now and
-   near-impossible once data exists, so get it right in the first commit.
-2. **Dead code, leftovers, duplicates** — see Rules. Flag them even when
-   they are harmless.
-3. **Never construct an expensive handle inside a loop** — hoist
-   `ProditionsHandle`/`DbHandle` to class members.
-4. **Production error handling: no `assert`, no bare `try`/`catch`, never
-   `print`.** `cet::exception` with a category unique to that call site,
-   reported through message facility; algorithm failures return a code.
-5. **Logging severity is a contract with the user.** Info and warning differ
-   by one letter on screen, so teaching users to skip twenty info lines
-   teaches them to skip the warning too. Message-facility categories must be
-   globally unique, not derived from the source file name.
-6. **const-correctness and interface hygiene** — pass the specific conditions
-   object rather than `art::Event`; return a `const&` and let the caller
-   decide whether to copy.
-7. **Modern-C++ idiom nudges, always hedged** — C++ casts over C casts,
-   `emplace_back`, `unique_ptr` over raw `new`, no subclassing STL containers.
-8. **Don't derive behaviour from incidental context** — deconstructing a file
-   name in code to recover run conditions. Prefer self-describing data, or an
-   explicit fcl parameter determined in the shell.
-9. **Build files must reflect real dependencies.** An untested trim of a link
-   list is not acceptable.
-10. **Intentional precision in output** — `std::setprecision` chosen per
+   Variables start lowercase; capitals mean class names.
+2. **Dead code** — see Rules, and flag it even when it is harmless. The test
+   for a dead member: no accessor and no constructor argument.
+3. **A numeric literal, and where the number belongs.** `constexpr` with a
+   real name is the floor, not the answer. The answer is one of three homes:
+   the geometry service if it is a detector dimension, Proditions/DB if it
+   can change with time, or a `constexpr` in `DataProducts/inc` if it is
+   fixed for all time. Ask what else needs to know this number — the same
+   literal appearing in C++, fcl and python is the finding, not the literal.
+4. **Unsourced numbers.** Any constant, spectrum table or material
+   composition needs its origin in a comment — paper, datasheet, chemical
+   formula, or the assumptions behind a mixture. A new data file with no
+   citation is a finding.
+5. **Copies nobody asked for.** Anything larger than a pointer passes by
+   `const&`; pass the lowest-level object that does the job (`Straw const&`,
+   not `Tracker const&`); dereference a `shared_ptr` once at the top of
+   `produce` and pass `T const&` down the call chain rather than the
+   pointer; an accessor returning an `int` returns by value, not `const&`.
+   Return a `const&` and let the caller decide whether to copy.
+6. **Members initialized where they are declared.** `double x = 0.;` in the
+   header beats the initializer list, which beats leaving it uninitialized.
+   The reason is maintenance, not safety: with several constructors it is
+   one place, and nothing gets missed when a member is added.
+7. **Symbolic names for anything with meaning.** `PDGCode::e_minus`, not
+   `11`; ROOT's `kFullCrossX`, not `47`. Flow control on a string comparison
+   or on N parallel `bool`s should be one `enum` — `EnumToStringSparse` when
+   it also needs to print.
+8. **No silent degradation, and no fabricated values from bad input.**
+   Detecting a bad input and continuing is a defect, not robustness. A
+   warning is not error handling — nobody reads the warnings from a million
+   grid jobs, but failures get investigated. Flag: returning a default on
+   malformed input, "returns null when undefined" as a convention, skipping
+   bad records inside the class that should have rejected them, an invalid
+   handle whose default then feeds a histogram or a sum. Throw, or skip the
+   event explicitly. A constructor must either throw or leave a
+   self-consistent object. Trigger code cannot throw, so it logs — that is
+   the only exception.
+9. **FHiCL that permits an invalid configuration.** Invalid combinations
+   must fail validation, not documentation:
+   - a `bool` flag plus loose atoms it governs → `OptionalTable<Config>`,
+     so the block is either absent or complete;
+   - mutually exclusive parameters → `use_if`;
+   - a sentinel value meaning "unset" → `OptionalAtom`;
+   - a plausible-but-wrong default in a committed job config → `@nil`.
+10. **fcl written by copy instead of by delta.** Job configs start from
+    `@local::Services.Sim` (or `.Core`/`.SimAndReco`) and override; repeated
+    near-identical blocks become one base table plus `@table::Base` variants.
+11. **fcl prologs and epilogs.** A forgotten prolog fails the job; a
+    forgotten epilog silently does not. Defaults belong in prologs that a job
+    config can override.
+12. **A module touched but left on unvalidated FHiCL.** Converting is the
+    standing ask whenever you are in the file anyway.
+13. **Redundant state.** Two representations of one fact can disagree:
+    numerator + denominator + efficiency; three typed members plus a
+    `datatype` field. Store one, derive the rest.
+14. **Things living in too large a scope.** A data member that could be a
+    function local; a static member function that could be free; a class with
+    no state that should have been a function. A function needing no member
+    data belongs in an anonymous namespace in the `.cc`.
+15. **Never construct an expensive handle inside a loop** — hoist
+    `ProditionsHandle`/`DbHandle` and their kind to class members.
+16. **Logging severity is a contract with the user.** Info and warning differ
+    by one letter on screen, so teaching users to skip twenty info lines
+    teaches them to skip the warning too. Message-facility categories must be
+    globally unique, not derived from the source file name.
+17. **Modern-C++ idiom nudges, always hedged** — C++ casts over C casts,
+    `emplace_back`, `unique_ptr` over raw `new`, no subclassing STL containers.
+18. **Don't derive behaviour from incidental context** — deconstructing a file
+    name in code to recover run conditions. Prefer self-describing data, or an
+    explicit fcl parameter determined in the shell.
+19. **Data-product paperwork.** An entry in `classes_def.xml` *and*
+    `art::Wrapper<T>` if it ever goes into the event singly; a default
+    constructor, which ROOT requires; `operator<<` implemented in the `.cc`;
+    an addition to `Print/`. Enums that reach a file are append-only —
+    inserting a value silently changes the meaning of data already written.
+20. **Histograms inside a producer.** They belong in a separate analyzer
+    reading the data products, unless they monitor transient state that
+    never reaches a product — and then behind a fcl switch that can disable
+    creating and filling them.
+21. **A shared class growing to serve one more caller.** Detector-specific
+    fields added to `StepPointMC`, physics cases added to `BinnedSpectrum`.
+    The new consumer defines its own type.
+22. **One configurable module where several small ones belong.** A config
+    field selecting a code path should usually be art's tool/plugin
+    dispatch instead. Instance names only when one module produces more
+    than one collection of the same type.
+23. **Irreproducibility.** Anything that makes a re-run of an old job give a
+    different answer — most often an interface referencing "now".
+24. **Intentional precision in output** — `std::setprecision` chosen per
     quantity and commented, never copied across quantities of different
     scale. That copy is exactly the mistake in the 🟢-is-a-claim example
     under Severity Levels.
-11. **Don't commit table data to the repo** — fcl can silently override it, so
-    it can never be trusted in production.
+25. **A PR doing two things.** Split it; that alone is grounds for rejection,
+    and unrelated changes in one PR are a blocking objection regardless of
+    whether each change is individually correct. Whitespace-only edits belong
+    in their own PR.
 
-**Non-negotiable in this layer:**
+### Database, conditions, build and release
 
+Applies to `DbTables`, `DbService`, Proditions, `dbTool` and the
+build/release system. Everything global lives in the house rules above;
+these are the conventions specific to this layer.
+
+- **Schema names are effectively permanent.** Renaming a table is merely
+  inconvenient now and near-impossible once data exists, so get it right in
+  the first commit.
+- **Pass the specific conditions object**, not `art::Event`.
+- **Don't commit table data to the repo** — fcl can silently override it, so
+  it can never be trusted in production.
 - **A uniform Proditions interface.** Every entity structured and interfaced
   identically (`fromDb`/`fromFcl`). The *contents* belong to the subsystem
   group; only the shape is fixed, because divergence is what makes
@@ -370,107 +446,6 @@ worth fixing, but must not headline a review.
 
 Unsettled, so raise it as a question and never as a defect: what `fromFcl`
 should do — zeros and fcl values, or a text path that exercises the DB code.
-
-### Simulation, geometry and job config
-
-Applies to `Mu2eG4`, `EventMixing`, `EventGenerator`, `Sources`,
-`JobConfig`, `Compression`, ExtMon, and the production/file-name tooling.
-Walk this list before writing findings; each item is a defect here.
-
-1. **No silent degradation.** Detecting a bad input and continuing is a
-   defect, not robustness. A warning is not error handling — nobody reads
-   the warnings from a million grid jobs, but failures get investigated.
-   Flag: returning a default on malformed input, "returns null when
-   undefined" as a convention, skipping bad records inside the class that
-   should have rejected them. A constructor must either throw or leave a
-   self-consistent object.
-2. **Unused anything** — see Rules. Read it widely here: typedefs used only
-   by their own dictionary, link dependencies nothing needs.
-3. **Unsourced numbers.** Any constant, spectrum table or material
-   composition needs its origin in a comment — paper, datasheet, chemical
-   formula, or the assumptions behind a mixture. A new data file with no
-   citation is a finding.
-4. **FHiCL that permits an invalid configuration.** Invalid combinations
-   must fail validation, not documentation:
-   - a `bool` flag plus loose atoms it governs → `OptionalTable<Config>`,
-     so the block is either absent or complete;
-   - mutually exclusive parameters → `use_if`;
-   - a sentinel value meaning "unset" → `OptionalAtom`;
-   - a plausible-but-wrong default in a committed job config → `@nil`.
-5. **Redundant state.** Two representations of one fact can disagree:
-   numerator + denominator + efficiency; three typed members plus a
-   `datatype` field. Store one, derive the rest.
-6. **Mixed-topic PR.** Unrelated changes in one PR are a blocking objection
-   here regardless of whether each change is individually correct.
-   Whitespace-only edits belong in their own PR.
-7. **fcl epilogs.** A forgotten prolog fails the job; a forgotten epilog
-   silently does not. Defaults belong in prologs that a job config can
-   override.
-8. **Irreproducibility.** Anything that makes a re-run of an old job give a
-   different answer — most often an interface referencing "now".
-9. **A shared class growing to serve one more caller.** Detector-specific
-   fields added to `StepPointMC`, physics cases added to `BinnedSpectrum`.
-   The new consumer defines its own type.
-10. **One configurable module where several small ones belong.** A config
-    field selecting a code path should usually be art's tool/plugin
-    dispatch instead. Instance names only when one module produces more
-    than one collection of the same type.
-11. **Naming, const-correctness and copies, setters, uninitialized members,
-    C++ defaults on physics parameters** — the general rules below, enforced
-    consistently here.
-
-### House rules, anywhere in Offline
-
-Not subsystem-scoped. Most restate one principle — **one authoritative
-place for every fact** — so when a finding does not obviously fit an item
-below, ask how many places would need editing to change this one thing.
-
-1. **A numeric literal, and where the number belongs.** `constexpr` with a
-   real name is the floor, not the answer. The answer is one of three homes:
-   the geometry service if it is a detector dimension, Proditions/DB if it
-   can change with time, or a `constexpr` in `DataProducts/inc` if it is
-   fixed for all time. Ask what else needs to know this number — the same
-   literal appearing in C++, fcl and python is the finding, not the literal.
-2. **Dead code** — see Rules. The test for a dead member: no accessor and no
-   constructor argument.
-3. **Copies nobody asked for.** Anything larger than a pointer passes by
-   `const&`; pass the lowest-level object that does the job (`Straw const&`,
-   not `Tracker const&`); dereference a `shared_ptr` once at the top of
-   `produce` and pass `T const&` down the call chain rather than the
-   pointer; an accessor returning an `int` returns by value, not `const&`.
-4. **Members initialized where they are declared.** `double x = 0.;` in the
-   header beats the initializer list, which beats leaving it uninitialized.
-   The reason is maintenance, not safety: with several constructors it is
-   one place, and nothing gets missed when a member is added.
-5. **Symbolic names for anything with meaning.** `PDGCode::e_minus`, not
-   `11`; ROOT's `kFullCrossX`, not `47`. Flow control on a string comparison
-   or on N parallel `bool`s should be one `enum` — `EnumToStringSparse` when
-   it also needs to print.
-6. **Things living in too large a scope.** A data member that could be a
-   function local; a static member function that could be free; a class with
-   no state that should have been a function. A function needing no member
-   data belongs in an anonymous namespace in the `.cc`.
-7. **fcl written by copy instead of by delta.** Job configs start from
-   `@local::Services.Sim` (or `.Core`/`.SimAndReco`) and override; repeated
-   near-identical blocks become one base table plus `@table::Base` variants.
-   For the `@nil`/`OptionalAtom` half of this, see item 4 of the
-   simulation/geometry list.
-8. **A module touched but left on unvalidated FHiCL.** Converting is the
-   standing ask whenever you are in the file anyway.
-9. **Data-product paperwork.** An entry in `classes_def.xml` *and*
-   `art::Wrapper<T>` if it ever goes into the event singly; a default
-   constructor, which ROOT requires; `operator<<` implemented in the `.cc`;
-   an addition to `Print/`. Enums that reach a file are append-only —
-   inserting a value silently changes the meaning of data already written.
-10. **Histograms inside a producer.** They belong in a separate analyzer
-    reading the data products, unless they monitor transient state that
-    never reaches a product — and then behind a fcl switch that can disable
-    creating and filling them.
-11. **Fabricated values from bad input.** An invalid handle that yields a
-    default, which then feeds a histogram or a sum, produces wrong physics
-    with no error. Throw, or skip the event explicitly. Trigger code cannot
-    throw, so it logs — that is the only exception.
-12. **A PR doing two things.** Split it; that alone is grounds for rejection.
 
 ## Rules
 
@@ -557,6 +532,8 @@ unless marked *(not on the wiki)*.
 **Errors and output**
 
 - All throws must use `cet::exception` with a meaningful category and message.
+  Make the category unique to that call site, and do not wrap production code
+  in a bare `try`/`catch`.
 - **Throw only for fatal errors** — missing configuration or resource,
   detected memory corruption.
 - **Algorithm failures must not throw** — prefer returning a failure code to
@@ -568,7 +545,8 @@ unless marked *(not on the wiki)*.
 
 **Build**
 
-- All libraries must specify all first-order dependencies at build time.
+- All libraries must specify all first-order dependencies at build time. An
+  untested trim of a link list is not acceptable.
 - Linkage loops are forbidden — including ones that "work by accident"
   because a third library happens to load first.
 - Code must compile cleanly at the warning levels set by Mu2e software
