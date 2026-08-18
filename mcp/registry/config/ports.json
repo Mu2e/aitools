@@ -1,0 +1,6 @@
+{
+  "registry": {
+    "port": 8000,
+    "description": "MCP server registry: list_mcp_servers tool, GET /registry (JSON), GET /list (HTML) for this deployment's MCP servers."
+  }
+}

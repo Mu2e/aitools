@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "registry-mcp"
+version = "0.1.0"
+description = "Trivial HTTP MCP server with a live MCP-registry endpoint -- proof of principle for the uv-installed, systemd-run MCP pattern"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "mcp>=2.0.0",
+]
+
+[project.scripts]
+registry-mcp = "registry_mcp.server:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+script-files = ["scripts/registry-mcp.sh"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

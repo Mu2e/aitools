@@ -1,0 +1,26 @@
+# Reference template only. `scripts/install.sh` renders a fully resolved copy
+# (with real paths for your deploy) to <deploy-root>/registry-mcp.service --
+# prefer that generated file over hand-editing this one.
+#
+# Install as a systemd --user unit:
+#   mkdir -p ~/.config/systemd/user
+#   cp registry-mcp.service.example ~/.config/systemd/user/registry-mcp.service   # edit paths first
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now registry-mcp
+#
+# Requires linger enabled for this account so the service survives logout:
+#   loginctl enable-linger        # or: sudo loginctl enable-linger <user>
+
+[Unit]
+Description=registry-mcp (trivial HTTP MCP server with a live registry endpoint)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=__DEPLOY_ROOT__/current/.venv/bin/registry-mcp.sh --port=8000 --registry=__REGISTRY_FILE__
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
