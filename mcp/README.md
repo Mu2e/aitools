@@ -11,6 +11,15 @@ This directory contains MCP server source projects only.
 
 ## Directory structure
 
+- `registry/` (prototype)
+  - Streamable-HTTP MCP server, proof of principle for the newer pattern:
+    `pyproject.toml` package installed with `uv` (git subdirectory syntax)
+    into a server account, run persistently under `systemd --user`, reached
+    over HTTP instead of spawned per-connection over stdio. Also serves a
+    live MCP-server registry (`GET /registry`) for client config bootstrap.
+  - Own install script: `registry/scripts/install.sh`
+  - See `registry/README.md` for the full pattern; other MCPs will migrate
+    to this shape over time.
 - `metacat/`
   - Source for the read-only metacat MCP server.
   - Own install script: `metacat/scripts/install.sh`
