@@ -39,27 +39,33 @@ gateway that fans live tool calls out to multiple backend MCP servers is a
 different, heavier component -- worth revisiting once there's more than one
 real HTTP backend to test it against.)
 
-## How it's installed and started -- no generated files
+## How it's installed and started
 
-`uv pip install` on this package produces two files in the target venv's
-`bin/`, installed together by the same command:
+A real (non-editable) `uv pip install` on this package produces, in the
+target venv:
 
-- `registry-mcp` -- the Python entry point (`[project.scripts]`)
-- `registry-mcp.sh` -- a plain bash wrapper (`[tool.setuptools] script-files`),
-  installed as a sibling of `registry-mcp` in the same directory. It's the
-  place for any server-side environment setup a real MCP might need (e.g.
-  `spack load ...`) before it `exec`s its sibling `registry-mcp`.
-  registry-mcp itself needs no such setup, so the wrapper is currently a
-  no-op passthrough.
+- `bin/registry-mcp` -- the Python entry point (`[project.scripts]`)
+- `bin/registry-mcp.sh` -- a plain bash wrapper (`[tool.setuptools]
+  script-files`), installed as a sibling of `registry-mcp` in the same
+  directory. It's the place for any server-side environment setup a real
+  MCP might need (e.g. `spack load ...`) before it `exec`s its sibling
+  `registry-mcp`. registry-mcp itself needs no such setup, so the wrapper
+  is currently a no-op passthrough.
+- `bin/registry-mcp-install-unit.sh` -- renders and registers the systemd
+  `--user` unit; see below.
+- `share/registry-mcp/ports.json` -- the `config/ports.json` template from
+  this checkout (`[tool.setuptools] data-files`), shipped so a fresh install
+  has *something* to look at without needing a checkout. It's a template,
+  not live config -- see "Registry file" below.
 
-That's the entire install -- no source tree gets copied, no config file
-gets generated, nothing else needs to happen. All runtime configuration
-(bind host/port, which registry file to read) is passed as CLI args at
-start time, so the systemd unit is a single self-contained `ExecStart` line:
-
-```
-ExecStart=<deploy-root>/current/.venv/bin/registry-mcp.sh --port=8000 --registry=/abs/path/ports.json
-```
+No source tree gets copied, and nothing here needs a checkout to work
+except `install.sh` itself (a convenience wrapper, not a requirement -- see
+its own usage text for the fully manual 3-command alternative). All runtime
+configuration (bind host/port, which registry file to read) is passed as
+CLI args at start time, so the systemd unit's `ExecStart` is a single
+self-contained line pointing at `registry-mcp.sh`, resolved relative to
+wherever that script actually lives -- see the systemd section below for
+exactly how that line gets generated.
 
 Versioned rollback still works exactly as you'd expect: each install lives
 under `<deploy-root>/releases/<ref>/.venv`, and `<deploy-root>/current` is a
@@ -87,10 +93,16 @@ from the same `_load_entries()`/`_build_registry()` pair in `server.py`, so
 there's no separate place for the three views to drift apart).
 
 This is genuinely separate from the versioned install above: it's operator-
-edited state that must survive upgrades untouched, so it's never generated
-or copied by `install.sh` -- only referenced, by path, via `--registry`.
-`config/ports.json` in this checkout is a ready-to-use copy; point
-`--registry` at it directly, or at your own copy anywhere else.
+edited state that must survive upgrades untouched. Nothing in the install
+generates or edits it for you -- `--registry` always just points at a path
+you own. Two starting points for that path, both meant to be copied out and
+edited, never used in place long-term:
+
+- `share/registry-mcp/ports.json` in the installed venv (shipped via
+  `uv pip install`, see above) -- also what `--registry` defaults to when
+  omitted, so `registry-mcp.sh --check` and a first smoke test work with no
+  setup at all.
+- `config/ports.json` in this checkout, for local dev.
 
 Port convention for this workspace: `registry` on 8000, other HTTP MCPs on
 8001-8009 as they're migrated from stdio.
@@ -125,37 +137,46 @@ Smoke test against a running server (MCP handshake + tool calls + `/registry` + 
 .venv/bin/python scripts/smoke_test_http.py http://127.0.0.1:8000
 ```
 
-## Server-account install (uv, git subdirectory syntax)
+Note: `uv pip install -e .` (editable) does not process `data-files` -- this
+is a general setuptools/editable-install limitation, not uv-specific -- so a
+local `-e .` dev venv has no `share/registry-mcp/ports.json`; the default
+falls back to `config/ports.json` in the checkout instead (same effect,
+different path). Real deployments never use `-e .`, so they always get the
+`share/` copy.
 
-Run in the account that will host the service (verified with
-`scripts/check_systemd_user.sh` -- see below). Requires a checkout of this
-repo on the server (for `install.sh` and `config/ports.json`) plus `uv` on
-`PATH`; the actual Python package install is pinned independently via `uv`
-against a git ref, not copied from the local checkout:
+## Server-account install
+
+No checkout is actually required for the package itself -- `uv venv` +
+`uv pip install "registry-mcp @ git+...#subdirectory=mcp/registry"` is the
+whole install, straight from GitHub. A checkout is only useful for the
+`install.sh` convenience wrapper and `check_systemd_user.sh`; see
+`install.sh --help` for the fully manual equivalent if you'd rather skip it.
 
 ```bash
 cd aitools/mcp/registry
 ./scripts/install.sh /path/to/deploy/registry v0.1.0
 ```
 
-This creates:
-
-- `/path/to/deploy/registry/releases/v0.1.0/.venv` (via `uv venv` + `uv pip
-  install "registry-mcp @ git+https://github.com/Mu2e/aitools@v0.1.0#subdirectory=aitools/mcp/registry"`)
-- `/path/to/deploy/registry/current` (symlink to the release above)
-- `/path/to/deploy/registry/registry-mcp.service` (rendered systemd unit,
-  real paths and `--registry` filled in)
-
-Then, as printed by `install.sh`:
+This creates `/path/to/deploy/registry/releases/v0.1.0/.venv` and symlinks
+`/path/to/deploy/registry/current` to it. It does not touch systemd --
+`install.sh` prints the next-step command for that, which is just:
 
 ```bash
 /path/to/deploy/registry/current/.venv/bin/registry-mcp.sh --check
-mkdir -p ~/.config/systemd/user
-cp /path/to/deploy/registry/registry-mcp.service ~/.config/systemd/user/registry-mcp.service
-systemctl --user daemon-reload
-systemctl --user enable --now registry-mcp
-systemctl --user status registry-mcp
+/path/to/deploy/registry/current/.venv/bin/registry-mcp-install-unit.sh \
+  --port 8000 --registry /path/to/your/own/ports.json
 ```
+
+`registry-mcp-install-unit.sh` renders the unit into *this release's own*
+`share/registry-mcp/registry-mcp.service` (not `~/.config`) and registers it
+with `systemctl --user link --force`, which creates a symlink in
+`~/.config/systemd/user/` pointing back at that file -- so the real unit
+content stays with the installed code, `~/.config` only ever holds a
+pointer, and there's nothing to hand-edit or copy. It then runs
+`daemon-reload` and `enable --now` (pass `--no-enable` to render + link
+without starting anything). Safe to re-run any time (e.g. after changing
+`--port`, or after a redeploy) -- `--force` makes the re-link a no-op
+other than picking up the new `ExecStart`.
 
 Requires linger enabled once per account so the service survives logout
 (permanent, survives reboot):
@@ -193,12 +214,16 @@ Verify systemd `--user` access before relying on any of this:
   reachable name differ.
 - Whether the smoke test should also serve as the systemd health check is
   still an open question -- deferred for now.
-- Verified locally end to end under this name (`uv venv` + `uv pip install
-  -e .`, `--check`, a live server hit via `curl /registry` and `/list`, and
-  a full MCP handshake via `smoke_test_http.py`) using the cluster's `uv`
-  (`mu2einit && slc uv`). Not yet verified: an actual non-editable install
-  from the git subdirectory URL (`scripts/install.sh` against a pushed
-  ref), and the real server account's systemd unit.
+- Verified end to end, real (non-editable) `uv pip install` against the
+  actual pushed `v0.1.0` tag on GitHub: package install, `share/` data-files
+  landing correctly, `--check`, `registry-mcp-install-unit.sh` rendering +
+  `systemctl --user link`-ing + enabling + starting a real unit, `curl
+  /registry` on a custom port, `systemctl --user disable --now` cleanup --
+  all in this dev sandbox (which also has a working `systemctl --user`).
+  Not yet verified: the actual `mu2eai@mu2eaigpvm01` server account
+  end-to-end, including whether its already-enabled linger carries through
+  a `systemctl --user link`-registered unit the same way (no reason to
+  expect otherwise, but not directly tested there).
 - `/list` builds its own HTML inline (an f-string in `server.py`); no
   templating engine and no new dependency. `html.escape()` is applied to
   every value even though `ports.json` is operator-edited/trusted, as cheap

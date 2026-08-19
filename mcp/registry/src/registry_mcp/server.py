@@ -21,6 +21,7 @@ import html
 import json
 import os
 import socket
+import sys
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
@@ -28,6 +29,17 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 
 _DEFAULT_REGISTRY_FILE = "config/ports.json"
+
+
+def _default_registry_file() -> str:
+    """Prefer the ports.json shipped via [tool.setuptools.data-files] into
+    this venv's share/ dir (present for a real `uv pip install`, absent for
+    an editable/-e install); fall back to a checkout-relative path for local
+    dev. Either way this is only the *default* -- pass --registry explicitly
+    for any real deployment, since this file is a template, not something
+    upgrades are expected to preserve edits to."""
+    installed = Path(sys.prefix) / "share" / "registry-mcp" / "ports.json"
+    return str(installed) if installed.exists() else _DEFAULT_REGISTRY_FILE
 
 # mcp>=2.0 renamed FastMCP -> MCPServer and dropped host/port from the
 # constructor / .settings -- they're passed to run() instead, see main().
@@ -140,11 +152,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--registry",
-        default=os.environ.get("REGISTRY_MCP_REGISTRY_FILE", _DEFAULT_REGISTRY_FILE),
+        default=os.environ.get("REGISTRY_MCP_REGISTRY_FILE", _default_registry_file()),
         help=(
-            "path to the mcp-servers ports.json registry file "
-            "(default: %(default)s, resolved relative to CWD -- pass an "
-            "absolute path for a real deployment)"
+            "path to the mcp-servers ports.json registry file (default: the "
+            "template shipped in this install's share/registry-mcp/ports.json "
+            "if present, else %(default)s -- pass an absolute path to your "
+            "own copy for a real deployment)"
         ),
     )
     parser.add_argument(

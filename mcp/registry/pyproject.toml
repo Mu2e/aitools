@@ -17,7 +17,10 @@ registry-mcp = "registry_mcp.server:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-script-files = ["scripts/registry-mcp.sh"]
+script-files = ["scripts/registry-mcp.sh", "scripts/registry-mcp-install-unit.sh"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.data-files]
+"share/registry-mcp" = ["config/ports.json"]

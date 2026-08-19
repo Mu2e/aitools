@@ -7,6 +7,7 @@
 **/*.pyc
 **/*.pyo
 **/*.egg-info/
+**/build/
 
 # Optional local deploy sandbox under source tree
 # (shared/group deploy should live outside the git workspace)
