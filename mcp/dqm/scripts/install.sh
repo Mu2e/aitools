@@ -1,14 +1,47 @@
 #!/usr/bin/env bash
-set -e -o pipefail
+set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  install.sh <target-root> <release-version> [group]
+  install.sh <deploy-root> <ref> [repo-url]
+
+Installs dqm-mcp into <deploy-root>/releases/<ref>/.venv using uv, pinned to
+the given git ref (tag/branch/commit) of the aitools repo, via uv's git
+subdirectory install syntax:
+
+  uv venv <deploy-root>/releases/<ref>/.venv
+  uv pip install --python <...>/.venv/bin/python \
+    "dqm-mcp @ git+<repo-url>@<ref>#subdirectory=mcp/dqm"
+
+That's the entire install -- no source tree is copied. `uv pip install`
+already produces everything needed to run it:
+
+  <...>/.venv/bin/dqm-mcp                     (python entry point)
+  <...>/.venv/bin/dqm-mcp.sh                   (bash wrapper -- server-side
+                                                 setup hook, execs dqm-mcp;
+                                                 currently a no-op passthrough)
+  <...>/.venv/bin/dqm-mcp-install-unit.sh      (renders + links the systemd
+                                                 --user unit; see below)
+
+<deploy-root>/current is symlinked to the new release. This script does not
+touch systemd itself -- run the printed dqm-mcp-install-unit.sh command when
+you're ready; it renders the unit into THIS release's own share/ dir and
+registers it with `systemctl --user link` (a symlink in ~/.config pointing
+back here, not a copy -- see dqm-mcp-install-unit.sh --help).
 
 Examples:
-  ./scripts/install.sh "$PWD/deploy/dqm" 0.1.0
-  ./scripts/install.sh /exp/mu2e/app/users/mu2epro/mcp/deploy/dqm 0.1.0 mu2e
+  ./scripts/install.sh /exp/mu2e/app/users/mu2epro/mcp/deploy/dqm v0.2.0
+  ./scripts/install.sh /exp/mu2e/app/users/mu2epro/mcp/deploy/dqm main \
+      https://github.com/Mu2e/aitools
+
+Notes:
+  - Run as the account that will run the systemd --user service.
+  - Requires `uv` on PATH.
+  - dqm-mcp needs no mu2e/cvmfs offline-software environment at all -- it's
+    a plain HTTP client (stdlib + requests) reaching the Query Engine's
+    public HTTPS endpoint, so there's nothing beyond the venv itself for
+    dqm-mcp.sh to set up.
 USAGE
   exit 2
 }
@@ -17,89 +50,34 @@ if [[ $# -lt 2 || $# -gt 3 ]]; then
   usage
 fi
 
-target_root="$1"
-release_version="$2"
-group_name="${3:-}"
-
-script_dir="$(cd "$(dirname "$0")" && pwd)"
-project_root="$(cd "$script_dir/.." && pwd)"
-
-release_dir="$target_root/releases/$release_version"
-registry_dir="$target_root/registry"
-current_link="$target_root/current"
-
-mkdir -p "$release_dir" "$registry_dir"
-
-echo "Installing release to: $release_dir"
-
-log_file="$target_root/install-${release_version}.log"
-mkdir -p "$(dirname "$log_file")"
-exec > >(tee -a "$log_file") 2>&1
-echo "Install log: $log_file"
-
-cp -a "$project_root/." "$release_dir/"
-rm -rf "$release_dir/.venv" "$release_dir/venv"
-find "$release_dir" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
-
-chmod +x "$release_dir/scripts/start_mcp.sh" \
-         "$release_dir/scripts/smoke_test_stdio.py" \
-         "$release_dir/scripts/install.sh"
-
-echo "[1/5] Sourcing Mu2e setup"
-set +e
-source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh
-rc=$?
-set -e
-if [[ $rc -ne 0 ]]; then
-  echo "ERROR: failed to source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh (exit $rc)" >&2
-  exit $rc
+if ! command -v uv >/dev/null 2>&1; then
+  echo "ERROR: uv not found on PATH" >&2
+  exit 2
 fi
 
-echo "[2/5] Running muse setup ops"
-set +e
-muse setup ops
-rc=$?
-set -e
-if [[ $rc -ne 0 ]]; then
-  echo "ERROR: 'muse setup ops' failed (exit $rc)" >&2
-  exit $rc
-fi
+deploy_root="$1"
+ref="$2"
+repo_url="${3:-https://github.com/Mu2e/aitools}"
 
-echo "[3/5] Creating Python virtual environment"
-python3 -m venv "$release_dir/venv"
-source "$release_dir/venv/bin/activate"
+release_dir="$deploy_root/releases/$ref"
+current_link="$deploy_root/current"
+venv_dir="$release_dir/.venv"
 
-echo "[4/5] Installing Python dependencies"
-PYTHONPATH= pip install -U pip
-if [[ -f "$release_dir/requirements.txt" ]]; then
-  PYTHONPATH= pip install -r "$release_dir/requirements.txt"
-fi
-PYTHONPATH= pip install --ignore-installed "$release_dir"
+mkdir -p "$release_dir"
 
-echo "[5/5] Updating current symlink and registry"
+echo "[1/2] Creating venv: $venv_dir"
+uv venv "$venv_dir"
+
+echo "[2/2] Installing dqm-mcp from ${repo_url}@${ref} (subdirectory: mcp/dqm)"
+uv pip install --python "$venv_dir/bin/python" \
+  "dqm-mcp @ git+${repo_url}@${ref}#subdirectory=mcp/dqm"
+
 ln -sfn "$release_dir" "$current_link"
-
-cat > "$registry_dir/mcp-servers.json" <<JSON
-{
-  "mcpServers": {
-    "dqm": {
-      "command": "$current_link/scripts/start_mcp.sh",
-      "env": {
-        "MCP_PYTHON": "$current_link/venv/bin/python",
-        "DQM_QE_BASE_URL": "https://dbdata0vm.fnal.gov:9443/QE/mu2e/prod/app/SQ/query?",
-        "DQM_QE_DBNAME": "mu2e_dqm_prd"
-      }
-    }
-  }
-}
-JSON
-
-if [[ -n "$group_name" ]]; then
-  chgrp -R "$group_name" "$target_root"
-  chmod -R g+rwX "$target_root"
-  find "$target_root" -type d -exec chmod g+s {} +
-fi
 
 echo "Done."
 echo "Current release: $current_link -> $release_dir"
-echo "Registry file: $registry_dir/mcp-servers.json"
+echo
+echo "Next steps:"
+echo "  1. $venv_dir/bin/dqm-mcp.sh --check"
+echo "  2. $venv_dir/bin/dqm-mcp-install-unit.sh --port 8001"
+echo "     (renders + links the systemd unit and enables/starts it -- pass --no-enable to skip that last part)"

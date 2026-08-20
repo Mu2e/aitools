@@ -2,5 +2,9 @@
   "registry": {
     "port": 8000,
     "description": "MCP server registry: list_mcp_servers tool, GET /registry (JSON), GET /list (HTML) for this deployment's MCP servers."
+  },
+  "dqm": {
+    "port": 8001,
+    "description": "Read-only MCP server for Mu2e DQM metrics via Query Engine over HTTP (dqm.sources/values/intervals/numbers/limits)."
   }
 }
