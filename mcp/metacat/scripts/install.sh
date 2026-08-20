@@ -1,19 +1,49 @@
 #!/usr/bin/env bash
-set -e -o pipefail
+set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  install.sh <target-root> <release-version> [group]
+  install.sh <deploy-root> <ref> [repo-url]
+
+Installs metacat-mcp into <deploy-root>/releases/<ref>/.venv using uv,
+pinned to the given git ref (tag/branch/commit) of the aitools repo, via
+uv's git subdirectory install syntax:
+
+  uv venv <deploy-root>/releases/<ref>/.venv
+  uv pip install --python <...>/.venv/bin/python \
+    "metacat-mcp @ git+<repo-url>@<ref>#subdirectory=mcp/metacat"
+
+That's the entire install -- no source tree is copied. `uv pip install`
+already produces everything needed to run it:
+
+  <...>/.venv/bin/metacat-mcp                     (python entry point)
+  <...>/.venv/bin/metacat-mcp.sh                   (bash wrapper -- server-side
+                                                     setup hook, execs metacat-mcp;
+                                                     currently a no-op passthrough)
+  <...>/.venv/bin/metacat-mcp-install-unit.sh      (renders + links the systemd
+                                                     --user unit; see below)
+
+<deploy-root>/current is symlinked to the new release. This script does not
+touch systemd itself -- run the printed metacat-mcp-install-unit.sh command
+when you're ready; it renders the unit into THIS release's own share/ dir
+and registers it with `systemctl --user link` (a symlink in ~/.config
+pointing back here, not a copy -- see metacat-mcp-install-unit.sh --help).
 
 Examples:
-  ./scripts/install.sh "$PWD/deploy/metacat" 0.1.0
-  ./scripts/install.sh /exp/mu2e/app/users/mu2epro/mcp/deploy/metacat 0.1.0 mu2e
+  ./scripts/install.sh /exp/mu2e/app/users/mu2epro/mcp/deploy/metacat v0.2.0
+  ./scripts/install.sh /exp/mu2e/app/users/mu2epro/mcp/deploy/metacat main \
+      https://github.com/Mu2e/aitools
 
 Notes:
-  - Run as the shared/service account (for example mu2epro).
-  - This script installs one release under releases/<version>, rebuilds a venv there,
-    updates current symlink, and writes registry/mcp-servers.json for metacat.
+  - Run as the account that will run the systemd --user service.
+  - Requires `uv` on PATH.
+  - metacat-mcp needs no mu2e/cvmfs offline-software environment -- its only
+    metacat-specific dependency is the `metacat-client` PyPI package (a
+    pinned dependency of this project, installed automatically by uv into
+    the venv above), configured via the METACAT_SERVER_URL /
+    METACAT_AUTH_SERVER_URL environment variables. There's nothing beyond
+    the venv itself for metacat-mcp.sh to set up.
 USAGE
   exit 2
 }
@@ -22,103 +52,34 @@ if [[ $# -lt 2 || $# -gt 3 ]]; then
   usage
 fi
 
-target_root="$1"
-release_version="$2"
-group_name="${3:-}"
-
-script_dir="$(cd "$(dirname "$0")" && pwd)"
-project_root="$(cd "$script_dir/.." && pwd)"
-
-release_dir="$target_root/releases/$release_version"
-registry_dir="$target_root/registry"
-current_link="$target_root/current"
-
-mkdir -p "$release_dir" "$registry_dir"
-
-echo "Installing release to: $release_dir"
-
-log_file="$target_root/install-${release_version}.log"
-mkdir -p "$(dirname "$log_file")"
-exec > >(tee -a "$log_file") 2>&1
-echo "Install log: $log_file"
-
-echo "Source provenance (best effort):"
-if command -v git >/dev/null 2>&1; then
-  if git -C "$project_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo "  git root: $project_root"
-    echo "  branch: $(git -C "$project_root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
-    echo "  commit: $(git -C "$project_root" rev-parse HEAD 2>/dev/null || echo unknown)"
-    echo "  describe: $(git -C "$project_root" describe --tags --always 2>/dev/null || echo unknown)"
-    echo "  status (--short):"
-    git -C "$project_root" status --short 2>/dev/null || true
-  else
-    echo "  git metadata not available (not a work tree): $project_root"
-  fi
-else
-  echo "  git command not available"
+if ! command -v uv >/dev/null 2>&1; then
+  echo "ERROR: uv not found on PATH" >&2
+  exit 2
 fi
 
-cp -a "$project_root/." "$release_dir/"
-rm -rf "$release_dir/.venv" "$release_dir/venv"
-find "$release_dir" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+deploy_root="$1"
+ref="$2"
+repo_url="${3:-https://github.com/Mu2e/aitools}"
 
-chmod +x "$release_dir/scripts/start_mcp.sh" \
-         "$release_dir/scripts/smoke_test_stdio.py" \
-         "$release_dir/scripts/install.sh"
+release_dir="$deploy_root/releases/$ref"
+current_link="$deploy_root/current"
+venv_dir="$release_dir/.venv"
 
-echo "[1/5] Sourcing Mu2e setup"
-set +e
-source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh
-rc=$?
-set -e
-if [[ $rc -ne 0 ]]; then
-  echo "ERROR: failed to source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh (exit $rc)" >&2
-  exit $rc
-fi
+mkdir -p "$release_dir"
 
-echo "[2/5] Running muse setup ops"
-set +e
-muse setup ops
-rc=$?
-set -e
-if [[ $rc -ne 0 ]]; then
-  echo "ERROR: 'muse setup ops' failed (exit $rc)" >&2
-  exit $rc
-fi
+echo "[1/2] Creating venv: $venv_dir"
+uv venv "$venv_dir"
 
-echo "[3/5] Creating Python virtual environment"
-python3 -m venv "$release_dir/venv"
-source "$release_dir/venv/bin/activate"
+echo "[2/2] Installing metacat-mcp from ${repo_url}@${ref} (subdirectory: mcp/metacat)"
+uv pip install --python "$venv_dir/bin/python" \
+  "metacat-mcp @ git+${repo_url}@${ref}#subdirectory=mcp/metacat"
 
-echo "[4/5] Installing Python dependencies"
-PYTHONPATH= pip install -U pip
-if [[ -f "$release_dir/requirements.txt" ]]; then
-  PYTHONPATH= pip install -r "$release_dir/requirements.txt"
-fi
-PYTHONPATH= pip install --ignore-installed "$release_dir"
-
-echo "[5/5] Updating current symlink and registry"
 ln -sfn "$release_dir" "$current_link"
-
-cat > "$registry_dir/mcp-servers.json" <<JSON
-{
-  "mcpServers": {
-    "metacat-readonly": {
-      "command": "$current_link/scripts/start_mcp.sh",
-      "env": {
-        "MCP_PYTHON": "$current_link/venv/bin/python"
-      }
-    }
-  }
-}
-JSON
-
-if [[ -n "$group_name" ]]; then
-  chgrp -R "$group_name" "$target_root"
-  chmod -R g+rwX "$target_root"
-  find "$target_root" -type d -exec chmod g+s {} +
-fi
 
 echo "Done."
 echo "Current release: $current_link -> $release_dir"
-echo "Registry file: $registry_dir/mcp-servers.json"
+echo
+echo "Next steps:"
+echo "  1. $venv_dir/bin/metacat-mcp.sh --check"
+echo "  2. $venv_dir/bin/metacat-mcp-install-unit.sh --port 8002"
+echo "     (renders + links the systemd unit and enables/starts it -- pass --no-enable to skip that last part)"

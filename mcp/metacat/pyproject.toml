@@ -4,12 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "metacat-mcp"
-version = "0.1.0"
-description = "Read-only MCP stdio server for Mu2e metacat discovery"
+version = "0.2.0"
+description = "Read-only streamable-HTTP MCP server for Mu2e metacat discovery"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "mcp>=1.2.0"
+  "mcp>=2.0.0",
+  "metacat-client>=4.1.3"
 ]
 
 [project.scripts]
@@ -17,6 +18,7 @@ metacat-mcp = "metacat_mcp.server:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+script-files = ["scripts/metacat-mcp.sh", "scripts/metacat-mcp-install-unit.sh"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

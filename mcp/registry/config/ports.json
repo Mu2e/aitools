@@ -6,5 +6,9 @@
   "dqm": {
     "port": 8001,
     "description": "Read-only MCP server for Mu2e DQM metrics via Query Engine over HTTP (dqm.sources/values/intervals/numbers/limits)."
+  },
+  "metacat": {
+    "port": 8002,
+    "description": "Read-only MCP server for Mu2e metacat dataset/file discovery (discover_datasets, get_dataset_details, query_dataset_files)."
   }
 }
