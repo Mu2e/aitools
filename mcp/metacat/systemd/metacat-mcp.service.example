@@ -1,0 +1,32 @@
+# Reference template only. `scripts/metacat-mcp-install-unit.sh` renders a
+# fully resolved copy (with real paths for your deploy) into this release's
+# own share/metacat-mcp/metacat-mcp.service and registers it with
+# `systemctl --user link` -- prefer that generated file over hand-editing
+# this one.
+#
+# Install as a systemd --user unit (manual alternative to
+# metacat-mcp-install-unit.sh):
+#   mkdir -p ~/.config/systemd/user
+#   cp metacat-mcp.service.example ~/.config/systemd/user/metacat-mcp.service   # edit paths first
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now metacat-mcp
+#
+# Requires linger enabled for this account so the service survives logout:
+#   loginctl enable-linger        # or: sudo loginctl enable-linger <user>
+
+[Unit]
+Description=metacat-mcp (read-only streamable-HTTP MCP server for Mu2e metacat discovery)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Uncomment and set if the default metacat-client server isn't right for this deploy:
+# Environment=METACAT_SERVER_URL=https://metacat.fnal.gov:9443/mu2e_meta_prod/app
+# Environment=METACAT_AUTH_SERVER_URL=https://metacat.fnal.gov:8143/auth/mu2e
+ExecStart=__DEPLOY_ROOT__/current/.venv/bin/metacat-mcp.sh --host=0.0.0.0 --port=8002
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
