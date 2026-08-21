@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import logging
 import os
 import sys
@@ -11,6 +12,17 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 
 LOGGER = logging.getLogger("metacat_mcp")
+
+
+def _server_version() -> str:
+    """Resolved from the installed package's metadata -- itself derived from
+    the nearest git tag by setuptools_scm at build/install time (see
+    pyproject.toml). Falls back gracefully for a raw checkout run without an
+    install (e.g. `python -m metacat_mcp.server` against source directly)."""
+    try:
+        return importlib.metadata.version("metacat-mcp")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown (not installed as a package)"
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8002
@@ -476,6 +488,7 @@ def query_dataset_files(
 def get_server_info() -> dict[str, Any]:
     return {
         "name": "metacat",
+        "version": _server_version(),
         "read_only": True,
         "transport": "streamable-http",
         "auth_mode": "no explicit token by default (environment-driven)",
