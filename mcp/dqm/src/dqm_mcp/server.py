@@ -27,7 +27,19 @@ DEFAULT_PORT = 8001
 READ_ONLY_INSTRUCTIONS = (
     "Read-only MCP server for Mu2e DQM metrics via Query Engine over HTTP. "
     "Always use nocache endpoint access semantics. "
-    "Return structured JSON rows from dqm.sources, dqm.values, dqm.intervals, dqm.numbers, and dqm.limits."
+    "Return structured JSON rows from dqm.sources, dqm.values, dqm.intervals, dqm.numbers, and dqm.limits.\n\n"
+    "DATA MODEL: a source (sid, from dqm.sources) is one monitored stream/process "
+    "(e.g. valNightly/reco); a value (vid, from dqm.values) is one named variable that "
+    "stream tracks (e.g. CPU time, a fit chi2, an occupancy); an interval (iid, from "
+    "dqm.intervals) is one time bucket for a source (e.g. one day, one run). Rows in "
+    "dqm.numbers/dqm.limits are keyed by all three (sid, vid, iid). "
+    "The natural, meaningful query is one sid + one vid: that returns a timeline of one "
+    "variable across intervals, suitable for trending/plotting. A bare sid with no vid "
+    "mixes every variable that source tracks into one undifferentiated pile -- rarely "
+    "what you want, and easy to misread as 'this stream has no recent data' when really "
+    "the results just contain a jumble of unrelated variables (or, if scan_complete is "
+    "false, an incomplete scan -- see query_metrics). Typical flow: list_sources to find "
+    "sid, list_values to find vid, then query_metrics(sid=..., vid=...)."
 )
 
 
@@ -485,7 +497,17 @@ def list_intervals(
 @mcp.tool(
     description=(
         "Query DQM metrics from dqm.numbers (default) or dqm.limits with optional source/value expansion. "
-        "Defaults to recent_days=10 and limit=100."
+        "Defaults to recent_days=10 and limit=100. "
+        "Typical call is sid + vid together -- that's a timeline of one named variable "
+        "for one source across intervals (a trend/plot-ready series). sid alone (no vid) "
+        "returns every variable that source tracks interleaved in one list -- rarely "
+        "useful, since results from different variables have unrelated valuex scales and "
+        "meanings; prefer list_values to find the vid you want first. When sid and/or vid "
+        "resolve to exactly one value (explicitly, or via process/stream/... narrowing to "
+        "one source), that filter is pushed down to the query itself; broader/unresolved "
+        "filters fall back to scanning the most recent scan_limit rows and filtering "
+        "client-side, which can be truncated -- always check counts.scan_complete before "
+        "treating matched_rows=0 as a confirmed absence of data."
     )
 )
 def query_metrics(
@@ -553,6 +575,22 @@ def query_metrics(
     allowed_sids = {_parse_int(r.get("sid")) for r in source_rows}
     allowed_sids.discard(None)
 
+    # A single resolved sid/vid -- given explicitly, or narrowed to exactly one
+    # via process/stream/aggregation/version (resp. groupx/subgroup/namex) --
+    # gets pushed down as a real where= clause on dqm.intervals/dqm.numbers/
+    # dqm.limits below, instead of only being applied as a client-side filter
+    # after an unscoped top-scan_limit-by-pk fetch. Without this, a source
+    # with a low insertion rate relative to others sharing the same table
+    # (e.g. one daily valNightly source alongside ~90 higher-volume CRV
+    # sources) can have its rows fall outside any bounded scan window no
+    # matter how large scan_limit is set -- raising scan_limit doesn't help
+    # because the required window depends on everyone else's insertion rate,
+    # not this query's own selectivity. When sid/vid can't be resolved to a
+    # single value (e.g. an aggregation filter matching several sources),
+    # this falls back to the previous unscoped-scan-plus-client-filter
+    # behavior -- see the scan_complete flag below for that case.
+    resolved_sid = sid if sid is not None else (next(iter(allowed_sids)) if len(allowed_sids) == 1 else None)
+
     value_where: list[str] = []
     if vid is not None:
         value_where.append(f"vid:eq:{vid}")
@@ -573,7 +611,11 @@ def query_metrics(
     allowed_vids = {_parse_int(r.get("vid")) for r in value_rows}
     allowed_vids.discard(None)
 
+    resolved_vid = vid if vid is not None else (next(iter(allowed_vids)) if len(allowed_vids) == 1 else None)
+
     interval_where: list[str] = []
+    if resolved_sid is not None:
+        interval_where.append(f"sid:eq:{resolved_sid}")
     if run is not None:
         interval_where.append(f"start_run:le:{run}")
         interval_where.append(f"end_run:ge:{run}")
@@ -607,9 +649,16 @@ def query_metrics(
     metric_cols = "nid,sid,iid,vid,valuex,sigma,code" if metric_table == "numbers" else "lid,sid,iid,vid,llimit,ulimit,sigma,alarmcode"
     metric_pk = "nid" if metric_table == "numbers" else "lid"
 
+    metric_where: list[str] = []
+    if resolved_sid is not None:
+        metric_where.append(f"sid:eq:{resolved_sid}")
+    if resolved_vid is not None:
+        metric_where.append(f"vid:eq:{resolved_vid}")
+
     metric_rows = client.query_csv(
         f"dqm.{metric_table}",
         columns=metric_cols,
+        where=metric_where or None,
         order=f"-{metric_pk}",
         limit=scan_limit,
     )
@@ -696,10 +745,28 @@ def query_metrics(
     results.sort(key=sort_key, reverse=reverse)
     paged = _apply_offset(results, limit, offset)
 
+    # scan_complete is the structural signal: matched_rows == 0 alone is
+    # ambiguous between "confirmed no data" and "scan stopped before finding
+    # any" -- a caller (human or agent) must check this flag before reporting
+    # an empty result as authoritative. True whenever the metric_rows fetch
+    # was not truncated, i.e. every row satisfying metric_where was examined.
+    scan_complete = len(metric_rows) < scan_limit
+
     warnings: list[str] = []
-    if len(metric_rows) >= scan_limit:
+    if not scan_complete and not results:
         warnings.append(
-            "scan_limit reached; consider increasing scan_limit for very selective filters"
+            f"INCOMPLETE SCAN, ZERO MATCHES: scan_limit was reached scanning dqm.{metric_table} "
+            "before finding any matching rows. This does NOT confirm no data exists for these "
+            "filters -- it means the scan stopped before reaching any that might match. Do not "
+            "report this as 'no data'; see scan_complete=false in counts. Pass an explicit sid "
+            "and/or vid (or narrow process/stream/aggregation/version to resolve to one source) "
+            "so the filter can be pushed down to the query itself, or raise scan_limit."
+        )
+    elif not scan_complete:
+        warnings.append(
+            "scan_limit reached; more matching rows may exist beyond the scanned window "
+            "(see scan_complete=false in counts). Narrow the query or raise scan_limit for "
+            "a complete result."
         )
 
     return {
@@ -733,6 +800,7 @@ def query_metrics(
             "scanned_metric_rows": len(metric_rows),
             "matched_rows": len(results),
             "returned_rows": len(paged),
+            "scan_complete": scan_complete,
         },
         "warnings": warnings,
         "results": paged,

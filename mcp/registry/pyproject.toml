@@ -1,10 +1,25 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68", "wheel", "setuptools_scm>=8"]
 build-backend = "setuptools.build_meta"
+
+# Version is derived from the nearest git tag at build time (setuptools_scm),
+# not hand-maintained here. install.sh already keys every release by the git
+# ref you pass it (releases/<ref>/...) -- a static version field in this file
+# was a second, disconnected label for the same thing, with no guardrail
+# keeping it in sync (nothing here ever read it back). Tag the repo when
+# cutting a release (e.g. v0.3.0) and that's the version -- installing from a
+# tag gives a clean "0.3.0"; installing from a ref N commits past the last
+# tag gives "0.3.1.devN+g<hash>", which is more honest than a stale
+# hand-edited number would be. Verified this resolves correctly through the
+# same `uv pip install "pkg @ git+...@<ref>#subdirectory=..."` path
+# install.sh uses (uv's git clone preserves tag history; not shallow in a way
+# that breaks `git describe`).
+[tool.setuptools_scm]
+root = "../.."
 
 [project]
 name = "registry-mcp"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Trivial HTTP MCP server with a live MCP-registry endpoint -- proof of principle for the uv-installed, systemd-run MCP pattern"
 readme = "README.md"
 requires-python = ">=3.10"
