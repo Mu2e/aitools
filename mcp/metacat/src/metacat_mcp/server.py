@@ -15,6 +15,15 @@ LOGGER = logging.getLogger("metacat_mcp")
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8002
 
+# Mu2e's production MetaCat instance -- stable for years, same endpoints
+# `setupmu2e-art.sh` + `muse setup ops` export as METACAT_SERVER_URL /
+# METACAT_AUTH_SERVER_URL. Baked in here as the fallback default (env vars
+# still take priority when set) so a systemd deploy works out of the box
+# without needing --metacat-server-url/--metacat-auth-server-url at
+# install-unit time, same as dqm-mcp's DEFAULT_QE_NOCACHE_URL.
+DEFAULT_METACAT_SERVER_URL = "https://metacat.fnal.gov:9443/mu2e_meta_prod/app"
+DEFAULT_METACAT_AUTH_SERVER_URL = "https://metacat.fnal.gov:8143/auth/mu2e"
+
 READ_ONLY_INSTRUCTIONS = """
 Read-only metacat MCP server for Mu2e data discovery.
 
@@ -61,7 +70,9 @@ def _client():
             "Install the 'metacat-client' package (pip/uv) into this server's venv."
         ) from exc
 
-    return MetaCatClient()
+    server_url = os.environ.get("METACAT_SERVER_URL", DEFAULT_METACAT_SERVER_URL)
+    auth_server_url = os.environ.get("METACAT_AUTH_SERVER_URL", DEFAULT_METACAT_AUTH_SERVER_URL)
+    return MetaCatClient(server_url=server_url, auth_server_url=auth_server_url)
 
 
 def _utc_iso(ts: float | None) -> str | None:
@@ -469,9 +480,14 @@ def get_server_info() -> dict[str, Any]:
         "transport": "streamable-http",
         "auth_mode": "no explicit token by default (environment-driven)",
         "write_tools_exposed": False,
+        "metacat": {
+            "server_url": os.environ.get("METACAT_SERVER_URL", DEFAULT_METACAT_SERVER_URL),
+            "auth_server_url": os.environ.get("METACAT_AUTH_SERVER_URL", DEFAULT_METACAT_AUTH_SERVER_URL),
+        },
         "notes": [
-            "Uses metacat.webapi.MetaCatClient() (pip package: metacat-client), configured via "
-            "the METACAT_SERVER_URL / METACAT_AUTH_SERVER_URL environment variables.",
+            "Uses metacat.webapi.MetaCatClient() (pip package: metacat-client), defaulting to "
+            "Mu2e's production MetaCat server; override via the METACAT_SERVER_URL / "
+            "METACAT_AUTH_SERVER_URL environment variables.",
             "Count-based dataset filtering can be slow at broad scope.",
             "Use discover_datasets filters before expensive detail calls.",
             "Collaboration namespace naming uses 'mu2e' (never 'mu2').",
@@ -516,9 +532,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.check:
         _client()
+        server_url = os.environ.get("METACAT_SERVER_URL", DEFAULT_METACAT_SERVER_URL)
         print(
             f"OK: metacat_mcp constructed and metacat.webapi.MetaCatClient imported "
-            f"(host={args.host} port={args.port})"
+            f"(host={args.host} port={args.port} metacat_server_url={server_url})"
         )
         return
 

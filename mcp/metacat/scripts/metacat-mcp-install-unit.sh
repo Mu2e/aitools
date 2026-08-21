@@ -20,11 +20,12 @@ ExecStart is resolved from this script's own location (same trick
 metacat-mcp.sh uses to find its sibling), so no path needs to be hand-edited
 or substituted.
 
---metacat-server-url / --metacat-auth-server-url are optional: metacat.webapi
-reads METACAT_SERVER_URL / METACAT_AUTH_SERVER_URL from the environment, so
-if given, they're written as Environment= lines in the unit; if omitted, the
-service inherits whatever metacat-client's own defaults or ambient
-environment provide.
+--metacat-server-url / --metacat-auth-server-url are optional and normally
+not needed: metacat-mcp already defaults to Mu2e's production MetaCat
+server (stable for years) if METACAT_SERVER_URL / METACAT_AUTH_SERVER_URL
+aren't set in the environment. Pass these flags only to point a deployment
+at a different MetaCat instance (e.g. dev/test) -- if given, they're written
+as Environment= lines in the unit, ahead of ExecStart.
 
 Safe to re-run (e.g. after changing --port, or after a redeploy):
 re-linking and re-enabling an already-installed unit is a no-op other than

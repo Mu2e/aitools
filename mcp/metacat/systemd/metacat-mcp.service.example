@@ -21,7 +21,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Uncomment and set if the default metacat-client server isn't right for this deploy:
+# metacat-mcp already defaults to Mu2e's production MetaCat server (stable for
+# years) if these aren't set. Uncomment and set only to point this deploy at a
+# different MetaCat instance (e.g. dev/test):
 # Environment=METACAT_SERVER_URL=https://metacat.fnal.gov:9443/mu2e_meta_prod/app
 # Environment=METACAT_AUTH_SERVER_URL=https://metacat.fnal.gov:8143/auth/mu2e
 ExecStart=__DEPLOY_ROOT__/current/.venv/bin/metacat-mcp.sh --host=0.0.0.0 --port=8002

@@ -22,10 +22,12 @@ already produces everything needed to run it:
                                                  setup hook, execs registry-mcp)
   <...>/.venv/bin/registry-mcp-install-unit.sh (renders + links the systemd
                                                  --user unit; see below)
-  <...>/.venv/share/registry-mcp/ports.json    (shipped template -- copy it
-                                                 out and edit; not something
-                                                 upgrades are expected to
-                                                 preserve edits to)
+  <...>/.venv/share/registry-mcp/ports.json    (this release's registry
+                                                 file, built from
+                                                 mcp/registry/config/ports.json
+                                                 at the pinned ref -- this is
+                                                 the file --registry should
+                                                 point at; see Notes below)
 
 <deploy-root>/current is symlinked to the new release. This script does not
 touch systemd itself -- run the printed registry-mcp-install-unit.sh command
@@ -41,11 +43,21 @@ Examples:
 Notes:
   - Run as the account that will run the systemd --user service (e.g. mu2eai).
   - Requires `uv` on PATH.
-  - registry-file defaults to config/ports.json next to this script; pass an
-    absolute path explicitly to keep it stable regardless of which checkout
-    you happen to run this from. This is only what gets printed in the
-    suggested next-step command -- copy it to your own path and edit it
-    first, same as the shipped share/ template.
+  - registry-file defaults to THIS release's own installed copy,
+    <deploy-root>/releases/<ref>/.venv/share/registry-mcp/ports.json (built
+    from mcp/registry/config/ports.json at the pinned ref) -- the same
+    default registry-mcp itself falls back to via sys.prefix when no
+    --registry is given. Point --registry at that path (or let
+    registry-mcp-install-unit.sh's suggested command do it for you) so that
+    servers only get added/removed by editing config/ports.json in git and
+    cutting a new release -- NOT by hand-editing any deployed file, and
+    especially not a path inside a personal checkout (a checkout's
+    config/ports.json is a live-read, uncached file for whatever process
+    happens to be pointed at it -- editing it takes effect immediately, with
+    no review gate, if anything is misconfigured to read it directly).
+  - Pass an explicit 4th argument only to deliberately override this
+    convention (e.g. a deploy-root-level copy meant to persist independently
+    of any one release); it is not needed for normal use.
 USAGE
   exit 2
 }
@@ -63,13 +75,17 @@ deploy_root="$1"
 ref="$2"
 repo_url="${3:-https://github.com/Mu2e/aitools}"
 
-script_dir="$(cd "$(dirname "$0")" && pwd)"
-checkout_dir="$(cd "$script_dir/.." && pwd)"
-registry_file="${4:-$checkout_dir/config/ports.json}"
-
 release_dir="$deploy_root/releases/$ref"
 current_link="$deploy_root/current"
 venv_dir="$release_dir/.venv"
+
+# Must come after venv_dir is set above -- this default references it.
+# Deliberately NOT checkout-relative: defaulting to a path inside whatever
+# checkout install.sh happens to be run from was the actual root cause of a
+# real incident (an edit to a checkout's config/ports.json went live
+# immediately because the deployed unit's --registry pointed there instead
+# of at this release's own installed copy). See Notes above.
+registry_file="${4:-$venv_dir/share/registry-mcp/ports.json}"
 
 mkdir -p "$release_dir"
 
@@ -84,7 +100,7 @@ ln -sfn "$release_dir" "$current_link"
 
 echo "Done."
 echo "Current release: $current_link -> $release_dir"
-echo "Registry file to use: $registry_file (copy it out and edit before using)"
+echo "Registry file to use: $registry_file"
 echo
 echo "Next steps:"
 echo "  1. $venv_dir/bin/registry-mcp.sh --check"
