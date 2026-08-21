@@ -115,14 +115,20 @@ when a flag isn't given:
 | `--host` | `METACAT_MCP_HOST` | `0.0.0.0` |
 | `--port` | `METACAT_MCP_PORT` | `8002` |
 
-`metacat.webapi.MetaCatClient()` itself reads the MetaCat server endpoint
-directly from the environment (not a server flag), same as the underlying
-client library:
+The MetaCat server endpoint is baked in as a default -- Mu2e's production
+instance has been stable for years -- and only needs overriding for a
+non-default deployment (e.g. pointing at a dev/test MetaCat instance):
 
-| Env var | Purpose |
-|---|---|
-| `METACAT_SERVER_URL` | MetaCat server endpoint |
-| `METACAT_AUTH_SERVER_URL` | MetaCat auth server endpoint |
+| Env var | Purpose | Default |
+|---|---|---|
+| `METACAT_SERVER_URL` | MetaCat server endpoint | `https://metacat.fnal.gov:9443/mu2e_meta_prod/app` |
+| `METACAT_AUTH_SERVER_URL` | MetaCat auth server endpoint | `https://metacat.fnal.gov:8143/auth/mu2e` |
+
+These aren't server CLI flags -- `_client()` reads the env var (falling back
+to the hardcoded default above) and passes it explicitly to
+`MetaCatClient(server_url=..., auth_server_url=...)` on every call. Check
+`get_server_info()`'s `metacat` field to see which endpoint a running
+deployment actually resolved.
 
 `METACAT_MCP_LOG_LEVEL` (default `INFO`) controls log verbosity.
 
