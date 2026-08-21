@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.metadata
 import io
 import logging
 import os
@@ -14,6 +15,17 @@ import requests
 from mcp.server.mcpserver import MCPServer
 
 LOGGER = logging.getLogger("dqm_mcp")
+
+
+def _server_version() -> str:
+    """Resolved from the installed package's metadata -- itself derived from
+    the nearest git tag by setuptools_scm at build/install time (see
+    pyproject.toml). Falls back gracefully for a raw checkout run without an
+    install (e.g. `python -m dqm_mcp.server` against source directly)."""
+    try:
+        return importlib.metadata.version("dqm-mcp")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown (not installed as a package)"
 
 DEFAULT_DBNAME = "mu2e_dqm_prd"
 DEFAULT_QE_NOCACHE_URL = "https://dbdata0vm.fnal.gov:9443/QE/mu2e/prod/app/SQ/query?"
@@ -252,6 +264,7 @@ def get_server_info() -> dict[str, Any]:
     client = _state["client"]
     return {
         "name": "dqm",
+        "version": _server_version(),
         "read_only": True,
         "transport": "streamable-http",
         "qe": {

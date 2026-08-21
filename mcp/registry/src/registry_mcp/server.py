@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import importlib.metadata
 import json
 import os
 import socket
@@ -29,6 +30,17 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 
 _DEFAULT_REGISTRY_FILE = "config/ports.json"
+
+
+def _server_version() -> str:
+    """Resolved from the installed package's metadata -- itself derived from
+    the nearest git tag by setuptools_scm at build/install time (see
+    pyproject.toml). Falls back gracefully for a raw checkout run without an
+    install (e.g. `python -m registry_mcp.server` against source directly)."""
+    try:
+        return importlib.metadata.version("registry-mcp")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown (not installed as a package)"
 
 
 def _default_registry_file() -> str:
@@ -79,6 +91,21 @@ def _build_registry() -> dict:
             }
             for name, info in entries.items()
         }
+    }
+
+
+@mcp.tool()
+def get_server_info() -> dict:
+    """Return server capabilities and version info, matching the shape of
+    dqm-mcp's and metacat-mcp's get_server_info() tools."""
+    host = _state["public_host"] or socket.getfqdn()
+    return {
+        "name": "registry",
+        "version": _server_version(),
+        "transport": "streamable-http",
+        "port": _state["port"],
+        "public_host": host,
+        "registry_file": str(_state["registry_file"]),
     }
 
 
