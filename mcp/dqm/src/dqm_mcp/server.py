@@ -40,18 +40,48 @@ READ_ONLY_INSTRUCTIONS = (
     "Read-only MCP server for Mu2e DQM metrics via Query Engine over HTTP. "
     "Always use nocache endpoint access semantics. "
     "Return structured JSON rows from dqm.sources, dqm.values, dqm.intervals, dqm.numbers, and dqm.limits.\n\n"
-    "DATA MODEL: a source (sid, from dqm.sources) is one monitored stream/process "
-    "(e.g. valNightly/reco); a value (vid, from dqm.values) is one named variable that "
-    "stream tracks (e.g. CPU time, a fit chi2, an occupancy); an interval (iid, from "
-    "dqm.intervals) is one time bucket for a source (e.g. one day, one run). Rows in "
-    "dqm.numbers/dqm.limits are keyed by all three (sid, vid, iid). "
+    "DATA MODEL (5 tables, 3 catalogs + 2 measurement tables):\n"
+    "- dqm.sources (sid): one monitored source, uniquely identified by "
+    "(process, stream, aggregation, version) -- e.g. process='valNightly', "
+    "stream='reco', aggregation='day'. list_sources / list_versions read this.\n"
+    "- dqm.values (vid): the catalog of named metrics that CAN be tracked, uniquely "
+    "identified by (groupx, subgroup, namex) -- groupx is typically a detector "
+    "subsystem (e.g. 'cal', 'trk', 'crv'), subgroup a processing/reconstruction stage "
+    "(e.g. 'digi', 'track', 'cluster'), namex the specific statistic (e.g. 'meanEnergy', "
+    "'rmsEnergy'). This catalog is source-independent: it doesn't say which sources "
+    "actually report a given vid, only that the name exists. list_values reads this.\n"
+    "- dqm.intervals (iid): one time/run bucket FOR ONE SOURCE (sid is a foreign key "
+    "here) -- a run/subrun range and/or a start/end timestamp range, unique per "
+    "(sid, start_run, start_subrun, end_run, end_subrun, start_time, end_time). Only a "
+    "start (of either the run range or the time range) is strictly required; end values "
+    "are optional, and a run range and a time range may both be present on the same "
+    "interval. A 'day' aggregation source gets roughly one interval per calendar day. "
+    "list_intervals reads this, scoped by sid.\n"
+    "- dqm.numbers (nid): the actual measurement -- one row per (sid, vid, iid) "
+    "triple (that combination is unique), holding valuex (the measured value), sigma "
+    "(uncertainty; 0.0 means not applicable/not computed, not literally zero error), "
+    "and code -- a FIXED enum (DqmNumber::codeValues in Mu2e/DQM's DQM/inc/DqmNumber.hh, "
+    "not source-defined): OK=0, lowStats=1, missing=2, error=3.\n"
+    "- dqm.limits (lid): the acceptable-range definition for that SAME (sid, vid, "
+    "iid) triple -- also unique per (vid, sid, iid), same foreign keys as numbers. "
+    "Structurally it mirrors dqm.numbers exactly; the only difference is payload: "
+    "llimit/ulimit (the acceptable lower/upper bounds that metric was expected to "
+    "fall within for that interval) and alarmcode instead of valuex and code. alarmcode "
+    "is also a fixed enum (DqmLimit::alarmValues in DQM/inc/DqmLimit.hh): ignore=0, "
+    "warnOnly=1, standard=2, critical=3. To check whether a given measurement was "
+    "in-spec, look up the same (sid, vid, iid) in dqm.limits -- but a numbers row and a "
+    "limits row for the same key are NOT guaranteed to both exist; there is no foreign "
+    "key between the two tables, they are independently populated.\n\n"
+    "query_metrics(metric_table=...) queries dqm.numbers (default) or dqm.limits -- "
+    "same sid/vid/interval filtering logic applies to both, since they share the same key shape.\n\n"
     "The natural, meaningful query is one sid + one vid: that returns a timeline of one "
     "variable across intervals, suitable for trending/plotting. A bare sid with no vid "
     "mixes every variable that source tracks into one undifferentiated pile -- rarely "
     "what you want, and easy to misread as 'this stream has no recent data' when really "
     "the results just contain a jumble of unrelated variables (or, if scan_complete is "
     "false, an incomplete scan -- see query_metrics). Typical flow: list_sources to find "
-    "sid, list_values to find vid, then query_metrics(sid=..., vid=...)."
+    "sid, list_values to find vid, then query_metrics(sid=..., vid=...) -- and "
+    "query_metrics(sid=..., vid=..., metric_table='limits') for the matching thresholds."
 )
 
 
@@ -281,7 +311,13 @@ def get_server_info() -> dict[str, Any]:
     }
 
 
-@mcp.tool(description="List DQM metric sources from dqm.sources.")
+@mcp.tool(
+    description=(
+        "List DQM metric sources from dqm.sources. Each row is one monitored source, "
+        "keyed by (process, stream, aggregation, version); the returned sid is the id "
+        "used to scope list_intervals and query_metrics to one source."
+    )
+)
 def list_sources(
     process: str | None = None,
     stream: str | None = None,
@@ -338,7 +374,14 @@ def list_sources(
     }
 
 
-@mcp.tool(description="List unique source versions, optionally filtered by process/stream/aggregation.")
+@mcp.tool(
+    description=(
+        "List unique source versions, optionally filtered by process/stream/aggregation. "
+        "version is one of the four fields that identify a dqm.sources row (alongside "
+        "process/stream/aggregation) -- use this to see which code versions have "
+        "reported for a given process/stream before narrowing list_sources/query_metrics."
+    )
+)
 def list_versions(
     process: str | None = None,
     stream: str | None = None,
@@ -377,7 +420,15 @@ def list_versions(
     }
 
 
-@mcp.tool(description="List DQM value names from dqm.values.")
+@mcp.tool(
+    description=(
+        "List DQM value names from dqm.values -- the catalog of metrics that can be "
+        "tracked, keyed by (groupx, subgroup, namex). This catalog is source-independent "
+        "(it doesn't say which sources report a given metric); the returned vid is the "
+        "id used to scope query_metrics to one variable. Use this to find the vid for a "
+        "metric you already know the name of, or to browse what's trackable at all."
+    )
+)
 def list_values(
     groupx: str | None = None,
     subgroup: str | None = None,
@@ -429,7 +480,15 @@ def list_values(
     }
 
 
-@mcp.tool(description="List DQM intervals with run/subrun or time filters.")
+@mcp.tool(
+    description=(
+        "List DQM intervals with run/subrun or time filters. Each interval belongs to "
+        "one source (sid) and represents one time/run bucket for it (e.g. roughly one "
+        "per day for a 'day' aggregation source); the returned iid is the third key "
+        "(alongside sid, vid) that dqm.numbers/dqm.limits rows attach to. Pass sid to "
+        "scope to one source -- unscoped, this lists intervals across all sources."
+    )
+)
 def list_intervals(
     sid: int | None = None,
     run: int | None = None,
@@ -510,6 +569,12 @@ def list_intervals(
 @mcp.tool(
     description=(
         "Query DQM metrics from dqm.numbers (default) or dqm.limits with optional source/value expansion. "
+        "metric_table='limits' has the identical (sid, vid, iid) key shape as 'numbers' -- "
+        "it's the acceptable llimit/ulimit range + alarmcode for the same metric/interval, "
+        "not a separate concept, so the same sid/vid/interval filters apply either way; call "
+        "it twice with the same sid/vid (once per metric_table) to compare a measured "
+        "valuex against its threshold, keeping in mind a numbers row and a limits row for "
+        "the same key are not guaranteed to both exist. "
         "Defaults to recent_days=10 and limit=100. "
         "Typical call is sid + vid together -- that's a timeline of one named variable "
         "for one source across intervals (a trend/plot-ready series). sid alone (no vid) "
