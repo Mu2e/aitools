@@ -1,0 +1,28 @@
+# Reference template only. `scripts/arxiv-mcp-install-unit.sh` renders a
+# fully resolved copy (with real paths for your deploy) into this release's
+# own share/arxiv-mcp/arxiv-mcp.service and registers it with `systemctl
+# --user link` -- prefer that generated file over hand-editing this one.
+#
+# Install as a systemd --user unit (manual alternative to
+# arxiv-mcp-install-unit.sh):
+#   mkdir -p ~/.config/systemd/user
+#   cp arxiv-mcp.service.example ~/.config/systemd/user/arxiv-mcp.service   # edit paths first
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now arxiv-mcp
+#
+# Requires linger enabled for this account so the service survives logout:
+#   loginctl enable-linger        # or: sudo loginctl enable-linger <user>
+
+[Unit]
+Description=arxiv-mcp (read-only streamable-HTTP MCP server for arXiv paper search)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=__DEPLOY_ROOT__/current/.venv/bin/arxiv-mcp.sh --host=0.0.0.0 --port=8003
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
