@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+# Version is derived from the nearest git tag at build time (setuptools_scm),
+# not hand-maintained here -- see ../registry/pyproject.toml's comment for why.
+[tool.setuptools_scm]
+root = "../.."
+
+[project]
+name = "arxiv-mcp"
+dynamic = ["version"]
+description = "Read-only streamable-HTTP MCP server for arXiv paper search"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "mcp>=2.0.0",
+  "arxiv>=2.4.1"
+]
+
+[project.scripts]
+arxiv-mcp = "arxiv_mcp.server:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+script-files = ["scripts/arxiv-mcp.sh", "scripts/arxiv-mcp-install-unit.sh"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
