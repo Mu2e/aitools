@@ -1,0 +1,35 @@
+# Reference template only. `scripts/runs-mcp-install-unit.sh` renders a
+# fully resolved copy (with real paths for your deploy) into this release's
+# own share/runs-mcp/runs-mcp.service and registers it with `systemctl
+# --user link` -- prefer that generated file over hand-editing this one.
+#
+# Install as a systemd --user unit (manual alternative to
+# runs-mcp-install-unit.sh):
+#   mkdir -p ~/.config/systemd/user
+#   cp runs-mcp.service.example ~/.config/systemd/user/runs-mcp.service   # edit paths first
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now runs-mcp
+#
+# Requires linger enabled for this account so the service survives logout:
+#   loginctl enable-linger        # or: sudo loginctl enable-linger <user>
+
+[Unit]
+Description=runs-mcp (read-only streamable-HTTP MCP server for the Mu2e run database)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# RUNS_MCP_MUSE_RELEASE picks which Offline release runs-mcp.sh's `muse
+# setup` resolves -- "head" for now (a CI build, see runs-mcp.sh's own
+# comment), a real published tag once one exists for the runTool work this
+# server depends on. MIKEY_KEYS_FILE is optional -- omit to leave auth
+# disabled. Neither is a credential, so plain Environment= lines are fine
+# here (contrast ecl-mcp, which needs an EnvironmentFile= for real secrets).
+Environment=RUNS_MCP_MUSE_RELEASE=head
+ExecStart=__DEPLOY_ROOT__/current/.venv/bin/runs-mcp.sh --host=0.0.0.0 --port=8006
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
