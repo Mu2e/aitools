@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+root = "../.."
+
+[project]
+name = "mikey"
+dynamic = ["version"]
+description = "Interactive key tool + lightweight bearer-token verifier for Mu2e MCP servers -- an informal 'is this a collaboration member' check, not real OAuth. See AUTHPLAN.md."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "mcp>=2.0.0",
+]
+
+[project.scripts]
+mikey = "mikey.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
