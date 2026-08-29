@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+# Version comes from the nearest git tag (setuptools_scm), not a hand-maintained
+# field here -- see ../registry/pyproject.toml's comment for why.
+[tool.setuptools_scm]
+root = "../.."
+
+[project]
+name = "ecl-mcp"
+dynamic = ["version"]
+description = "Streamable-HTTP MCP server for the Fermilab ECL logbook, read-only by default, mikey-authenticated"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "mcp>=2.0.0",
+  "ecl-api @ git+https://github.com/Mu2e/ecl-api",
+  "mikey @ git+https://github.com/Mu2e/aitools#subdirectory=mcp/mikey",
+]
+
+[project.scripts]
+ecl-mcp = "ecl_mcp.server:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+script-files = ["scripts/ecl-mcp.sh", "scripts/ecl-mcp-install-unit.sh"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,35 @@
+# Reference template only. `scripts/ecl-mcp-install-unit.sh` renders a fully
+# resolved copy (with real paths for your deploy, and an EnvironmentFile=
+# line if you pass --env-file) into this release's own share/ecl-mcp/
+# ecl-mcp.service and registers it with `systemctl --user link` -- prefer
+# that generated file over hand-editing this one.
+#
+# Install as a systemd --user unit (manual alternative to
+# ecl-mcp-install-unit.sh):
+#   mkdir -p ~/.config/systemd/user
+#   cp ecl-mcp.service.example ~/.config/systemd/user/ecl-mcp.service   # edit paths first
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now ecl-mcp
+#
+# Requires linger enabled for this account so the service survives logout:
+#   loginctl enable-linger        # or: sudo loginctl enable-linger <user>
+
+[Unit]
+Description=ecl-mcp (streamable-HTTP MCP server for the Fermilab ECL logbook, mikey-authenticated)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# KEY=VALUE lines: ECL_URL, ECL_USER_NAME, ECL_PASSWORD, MIKEY_KEYS_FILE,
+# and optionally ECL_MCP_READ_ONLY / MIKEY_SERVER_URL. Keep this file 0600,
+# owned by the account running this unit -- see
+# ecl-mcp-install-unit.sh --help for why credentials belong here and not in
+# ExecStart.
+EnvironmentFile=__ENV_FILE__
+ExecStart=__DEPLOY_ROOT__/current/.venv/bin/ecl-mcp.sh --host=0.0.0.0 --port=8005
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
