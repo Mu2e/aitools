@@ -67,7 +67,13 @@ _state: dict = {
 
 
 def _load_entries() -> dict[str, dict]:
-    """name -> {"port": int, "description": str}, straight from ports.json."""
+    """name -> {"port": int, "description": str, "token": "yes"|"no"}, straight from ports.json.
+
+    "token" records whether that server requires a mikey bearer token to
+    call -- "no" for servers auth hasn't been rolled out to yet, not
+    necessarily "this server has no sensitive data." Missing/older entries
+    default to "no" via .get() below, not enforced here.
+    """
     try:
         with _state["registry_file"].open() as f:
             return json.load(f)
@@ -76,6 +82,7 @@ def _load_entries() -> dict[str, dict]:
             "registry": {
                 "port": _state["port"],
                 "description": "MCP server registry (this service).",
+                "token": "no",
             }
         }
 
@@ -88,6 +95,7 @@ def _build_registry() -> dict:
             name: {
                 "url": f"http://{host}:{info['port']}/mcp",
                 "description": info.get("description", ""),
+                "token": info.get("token", "no"),
             }
             for name, info in entries.items()
         }
@@ -137,12 +145,14 @@ async def list_page(request: Request) -> HTMLResponse:
     for name, info in sorted(entries.items()):
         port = info.get("port", "")
         description = info.get("description", "")
+        token = info.get("token", "no")
         url = f"http://{host}:{port}/mcp"
         rows.append(
             "<tr>"
             f"<td>{html.escape(name)}</td>"
             f"<td>{html.escape(str(port))}</td>"
             f"<td><code>{html.escape(url)}</code></td>"
+            f"<td>{html.escape(token)}</td>"
             f"<td>{html.escape(description)}</td>"
             "</tr>"
         )
@@ -156,7 +166,7 @@ async def list_page(request: Request) -> HTMLResponse:
         "th{background:#f0f0f0;}"
         "</style></head><body>"
         f"<h1>MCP Registry &mdash; {html.escape(host)}</h1>"
-        "<table><thead><tr><th>Name</th><th>Port</th><th>URL</th><th>Description</th></tr></thead>"
+        "<table><thead><tr><th>Name</th><th>Port</th><th>URL</th><th>Token</th><th>Description</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
         "<p>Machine-readable: <a href='/registry'>/registry</a></p>"
         "</body></html>"

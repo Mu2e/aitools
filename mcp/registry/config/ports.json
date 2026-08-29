@@ -1,22 +1,37 @@
 {
   "registry": {
     "port": 8000,
-    "description": "MCP server registry: list_mcp_servers tool, GET /registry (JSON), GET /list (HTML) for this deployment's MCP servers."
+    "description": "MCP server registry: list_mcp_servers tool, GET /registry (JSON), GET /list (HTML) for this deployment's MCP servers.",
+    "token": "no"
   },
   "dqm": {
     "port": 8001,
-    "description": "Read-only MCP server for Mu2e DQM metrics via Query Engine over HTTP (dqm.sources/values/intervals/numbers/limits)."
+    "description": "Read-only MCP server for Mu2e DQM metrics via Query Engine over HTTP (dqm.sources/values/intervals/numbers/limits).",
+    "token": "no"
   },
   "metacat": {
     "port": 8002,
-    "description": "Read-only MCP server for Mu2e metacat dataset/file discovery (discover_datasets, get_dataset_details, query_dataset_files)."
+    "description": "Read-only MCP server for Mu2e metacat dataset/file discovery (discover_datasets, get_dataset_details, query_dataset_files).",
+    "token": "no"
   },
   "arxiv": {
     "port": 8003,
-    "description": "Read-only MCP server for arXiv paper search (search_papers, get_paper), via the public arXiv Atom API."
+    "description": "Read-only MCP server for arXiv paper search (search_papers, get_paper), via the public arXiv Atom API.",
+    "token": "no"
   },
   "inspirehep": {
     "port": 8004,
-    "description": "Read-only MCP server for INSPIRE-HEP literature/author/citation search, via the public INSPIRE-HEP REST API."
+    "description": "Read-only MCP server for INSPIRE-HEP literature/author/citation search, via the public INSPIRE-HEP REST API.",
+    "token": "no"
+  },
+  "ecl": {
+    "port": 8005,
+    "description": "Streamable-HTTP MCP server for the Fermilab ECL logbook, read-only by default (ecl_search_entries, ecl_get_entry, ecl_list_categories/tags/forms).",
+    "token": "yes"
+  },
+  "runs": {
+    "port": 8006,
+    "description": "Read-only MCP server for the Mu2e run database via runTool (get_run, list_runs, get_flags, get_dbtables, get_cidtables, get_config_blob).",
+    "token": "yes"
   }
 }
