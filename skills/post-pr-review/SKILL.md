@@ -3,8 +3,8 @@ name: post-pr-review
 description: Publish a locally drafted PR review to GitHub as a formal review or comment. Use after /reviewing-pull-requests has staged a draft and the user asks to post it. Enforces a staleness gate, decision-to-event mapping, and a duplicate check before anything is sent.
 compatibility: Requires gh CLI authenticated with review permission on the target repo
 metadata:
-  version: "1.2.0"
-  last-updated: "2026-08-07"
+  version: "1.3.0"
+  last-updated: "2026-08-14"
 ---
 
 # Post PR Review
@@ -70,14 +70,25 @@ moved head, duplicate hit).
      suggest posting only the delta (edit the file first) or
      re-invoking with `--allow-duplicate`.
 
-5. **Post.**
+5. **Tightening pass.** Reread the draft against "Tightening pass" in
+   `reviewing-pull-requests` and edit the file wherever it fails:
+   findings that restate instead of prove, ⚪/🟡 carrying a full
+   three-part block, residual-risk bullets caveating work CI already
+   covers, 🟢s naming no file or command, telegraphic prose in place of
+   sentences. A draft staged in an earlier session or hand-edited since
+   has not necessarily had this pass — run it here regardless.
+
+   Editing the file at this point is expected; rewriting the text at
+   `gh` invocation time is not. Finish the file, then post it verbatim.
+
+6. **Post.**
    ```
    gh pr review <N> --repo <owner>/<repo> --<event> --body-file <file>
    ```
    The body is posted verbatim — never rewrite it at post time. If the
    file needs changes, edit and re-stage first, then re-invoke.
 
-6. **Report** the posted review URL, the event used, and which gates
+7. **Report** the posted review URL, the event used, and which gates
    were overridden (if any).
 
 ## Why a local draft at all
