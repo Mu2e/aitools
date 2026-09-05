@@ -28,6 +28,7 @@ from typing import Any
 
 from ecl_api import ECL, ECLEntry
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mikey import build_auth_kwargs
 
 LOGGER = logging.getLogger("ecl_mcp")
@@ -108,10 +109,25 @@ def _get_ecl() -> ECL:
 
 
 def _wrap(fn):
-    """Convert exceptions raised inside a tool into structured error dicts.
+    """Convert exceptions raised inside a tool into a readable ToolError.
 
-    Keeps the agent-facing contract simple: every tool either returns its
-    normal payload or ``{"error": "<code>", "message": "<detail>"}``.
+    Originally this returned a plain {"error": "<code>", "message": ...}
+    dict instead of raising. That's broken for any tool annotated to
+    return a list (ecl_search_entries, ecl_search_entry_ids,
+    ecl_list_categories/tags/forms -- i.e. every read tool except
+    ecl_get_entry): the SDK converts a successful return value against
+    the tool's declared output schema *after* the function returns, and a
+    dict doesn't satisfy a list[...]-typed schema -- confirmed live
+    (unreachable ECL_URL triggering this exact path), the conversion
+    failure gets classified as an unexpected crash, and per the SDK's own
+    design that deliberately withholds the real message from the caller
+    ("Error executing tool <name>", nothing else). Raising ToolError
+    instead sidesteps output conversion entirely and is exactly the
+    mechanism the SDK provides for "a failure you saw coming": the
+    message reaches the caller as an is_error=True result, logged
+    server-side at INFO without a traceback -- so the LOGGER.exception
+    call below is kept, to still get a full traceback in this server's
+    own logs for the genuinely unexpected case.
     """
 
     @functools.wraps(fn)
@@ -119,10 +135,10 @@ def _wrap(fn):
         try:
             return fn(*args, **kwargs)
         except ValueError as e:
-            return {"error": "bad_request", "message": str(e)}
+            raise ToolError(f"bad_request: {e}") from e
         except Exception as e:  # noqa: BLE001 -- deliberately broad, see docstring
             LOGGER.exception("ecl-mcp tool %s failed", fn.__name__)
-            return {"error": "tool_failed", "message": f"{type(e).__name__}: {e}"}
+            raise ToolError(f"tool_failed: {type(e).__name__}: {e}") from e
 
     return inner
 
