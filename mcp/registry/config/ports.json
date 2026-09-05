@@ -33,5 +33,10 @@
     "port": 8006,
     "description": "Read-only MCP server for the Mu2e run database via runTool (get_run, list_runs, get_flags, get_dbtables, get_cidtables, get_config_blob).",
     "token": "yes"
+  },
+  "memory": {
+    "port": 8007,
+    "description": "Persistent project memory for agents, stored in Postgres: put_document, get_document, list_documents, list_versions, list_projects, set_metadata. Documents are private to the owner named by the caller's token.",
+    "token": "yes"
   }
 }
