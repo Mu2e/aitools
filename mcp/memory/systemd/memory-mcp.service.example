@@ -1,0 +1,39 @@
+# Reference template only. `scripts/memory-mcp-install-unit.sh` renders a fully
+# resolved copy (with real paths for your deploy) into this release's own
+# share/memory-mcp/memory-mcp.service and registers it with `systemctl --user
+# link` -- prefer that generated file over hand-editing this one.
+#
+# Install as a systemd --user unit (manual alternative to
+# memory-mcp-install-unit.sh):
+#   mkdir -p ~/.config/systemd/user
+#   cp memory-mcp.service.example ~/.config/systemd/user/memory-mcp.service   # edit paths first
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now memory-mcp
+#
+# Requires linger enabled for this account so the service survives logout:
+#   loginctl enable-linger        # or: sudo loginctl enable-linger <user>
+
+[Unit]
+Description=memory-mcp (persistent project-memory MCP server, Postgres-backed)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# MIKEY_KEYS_FILE is REQUIRED -- the key's name is the document owner, and the
+# server refuses to start without it. The path is not itself a secret (the
+# file's own permissions are the protection), so a plain Environment= line is
+# fine. No database credentials appear anywhere: the connection is
+# Kerberos-authenticated from the ambient environment.
+Environment=MIKEY_KEYS_FILE=__MIKEY_KEYS_FILE__
+#
+# Optional: only if the Kerberos credential cache is somewhere non-default, or
+# other site-specific variables are needed. systemd parses this as plain
+# KEY=VALUE lines -- `export KEY=VALUE` will NOT work here.
+# EnvironmentFile=__ENV_FILE__
+ExecStart=__DEPLOY_ROOT__/current/.venv/bin/memory-mcp.sh --host=0.0.0.0 --port=8007
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

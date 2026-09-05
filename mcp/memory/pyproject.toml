@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+# Version comes from the nearest git tag (setuptools_scm), not a hand-maintained
+# field here -- see ../registry/pyproject.toml's comment for why.
+[tool.setuptools_scm]
+root = "../.."
+
+[project]
+name = "memory-mcp"
+dynamic = ["version"]
+description = "Streamable-HTTP MCP server providing persistent per-owner project memory, backed by Postgres, mikey-authenticated"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "mcp>=2.0.0",
+  "mikey @ git+https://github.com/Mu2e/aitools#subdirectory=mcp/mikey",
+  "psycopg[binary]>=3.1",
+  "psycopg_pool>=3.2",
+]
+
+[project.scripts]
+memory-mcp = "memory_mcp.server:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+script-files = ["scripts/memory-mcp.sh", "scripts/memory-mcp-install-unit.sh"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.data-files]
+"share/memory-mcp" = ["sql/create_tables.sql"]
