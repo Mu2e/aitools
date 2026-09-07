@@ -105,6 +105,10 @@ INSTRUCTIONS = (
     "document findable later): keywords, a description written for an agent "
     "to read, an importance weight 0-100, and an expiry date. Updating "
     "metadata carries forward whatever you do not specify.\n\n"
+    "TIMES: every timestamp returned is UTC. A time you supply without a "
+    "timezone is read as UTC, and a bare date means midnight at the START of "
+    "that day -- so expires='2026-12-31' lapses as Dec 31 begins. Give an "
+    "explicit time if you mean otherwise.\n\n"
     "TYPICAL FLOW: list_projects to see what exists, list_documents to browse "
     "(returns metadata and SIZE but never content -- check the size before "
     "reading), then get_document for the text. For a document too large to "
@@ -278,7 +282,23 @@ def _wrap(fn):
 
 
 def _iso(value: Any) -> Any:
-    return value.isoformat() if isinstance(value, datetime) else value
+    """Serialize a timestamp as ISO 8601 in UTC.
+
+    Every timestamp column is TIMESTAMPTZ, which stores an absolute instant
+    and renders in the session's timezone on the way out -- so without this
+    conversion a date supplied as UTC comes back rendered in the database
+    server's local zone. That is the same instant, but it reads as though the
+    date moved: `expires=2020-01-01` returning `2019-12-31T18:00:00-06:00`.
+    Correct, and reliably confusing.
+
+    Normalizing every timestamp this API emits to UTC means input round-trips
+    visibly, and an agent comparing create_time / updated / expires never has
+    to reconcile offsets between them. See _parse_time for the input half of
+    the same convention.
+    """
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).isoformat()
+    return value
 
 
 def _row(record: dict[str, Any]) -> dict[str, Any]:
@@ -301,6 +321,15 @@ def _parse_keywords(raw: str | None) -> list[str] | None:
 
 
 def _parse_time(raw: str | None, field: str) -> datetime | None:
+    """Parse an ISO 8601 timestamp. Input without a timezone is taken as UTC.
+
+    A bare date means midnight UTC at the START of that day -- so
+    `expires='2026-12-31'` lapses as Dec 31 begins, not as it ends. That is a
+    stated rule rather than a guess: supply an explicit time (or the next
+    day's date) to mean something else. Deliberately not "helpfully" shifted
+    to end-of-day, because implicit adjustment is worse than a documented
+    convention for a caller that has to reason about it.
+    """
     if raw is None or not raw.strip():
         return None
     text = raw.strip().replace("Z", "+00:00")
@@ -309,7 +338,7 @@ def _parse_time(raw: str | None, field: str) -> datetime | None:
     except ValueError:
         raise ValueError(
             f"{field}: could not parse {raw!r} -- use ISO 8601, e.g. '2026-12-31' "
-            "or '2026-12-31T17:00:00-06:00'"
+            "(midnight UTC starting that day) or '2026-12-31T17:00:00-06:00'"
         ) from None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
@@ -439,14 +468,16 @@ def list_documents(
         description_contains: case-insensitive substring match on the description
         min_weight: only documents with importance weight >= this (0-100)
         created_after: ISO date/time -- when the document was first created
+                   (read as UTC if no timezone given)
         updated_after: ISO date/time -- when its latest version was written
+                   (read as UTC if no timezone given)
         include_expired: include documents past their expiry date
         include_retired: include documents that have been retired
         sort_by: weight (default), name, created, updated, or size
         limit: max rows (default 50, capped at 500)
 
     Each row: project, name, latest_version, size_bytes, created, updated,
-    description, keywords, weight, expires, retired.
+    description, keywords, weight, expires, retired. All timestamps are UTC.
     """
     owner = _owner()
     if sort_by not in _SORT_OPTIONS:
@@ -649,10 +680,12 @@ def put_document(
         description: a short description written for an agent to read later --
               this is the main thing that makes a document findable
         weight: importance 0-100, used for default listing order
-        expires: ISO date/time after which the document drops out of listings
+        expires: ISO date/time after which the document drops out of listings.
+              Read as UTC when no timezone is given; a bare date means
+              midnight at the START of that day.
 
     Metadata arguments are optional and merge with existing metadata: anything
-    you omit is carried forward, not blanked.
+    you omit is carried forward, not blanked. All returned timestamps are UTC.
     """
     owner = _owner()
     project = _require(project, "project")
@@ -768,6 +801,9 @@ def set_metadata(
     the current metadata. Pass an empty string to clear a text field (for
     example expires="" removes the expiry). The previous metadata is archived,
     not overwritten.
+
+    expires is read as UTC when no timezone is given, and a bare date means
+    midnight at the START of that day. All returned timestamps are UTC.
 
     retired=true hides the document from listings without deleting it -- the
     closest thing to deletion available, since this server cannot delete.
