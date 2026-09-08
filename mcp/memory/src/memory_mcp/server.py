@@ -425,18 +425,37 @@ def get_server_info() -> dict[str, Any]:
 
 @mcp.tool(name="list_projects")
 @_wrap
-def list_projects() -> list[str]:
+def list_projects(include_expired: bool = False, include_retired: bool = False) -> list[str]:
     """List the project names you have documents under.
 
     Cheap discovery entry point -- start here when you don't know what is
     stored yet.
+
+    By default a project appears only if it still has at least one document
+    that list_documents would show, so the two tools agree: a project whose
+    documents have all been retired or expired is not listed. Otherwise
+    following the documented flow (list_projects, then list_documents) would
+    surface a project that then browses as empty.
+
+    include_expired / include_retired widen this the same way they do in
+    list_documents.
     """
     owner = _owner()
+    clauses = ["d.owner = %(owner)s"]
+    if not include_expired:
+        clauses.append("(m.expires IS NULL OR m.expires > now())")
+    if not include_retired:
+        clauses.append("COALESCE(m.retired, false) = false")
+
+    query = _q(
+        "SELECT DISTINCT d.project "
+        "  FROM {s}.documents d "
+        "  LEFT JOIN {s}.current_metadata m ON m.doc_id = d.doc_id "
+        " WHERE " + " AND ".join(clauses) + " "
+        " ORDER BY d.project"
+    )
     with _read_cursor() as cur:
-        rows = cur.execute(
-            _q("SELECT DISTINCT project FROM {s}.documents WHERE owner=%s ORDER BY project"),
-            (owner,),
-        ).fetchall()
+        rows = cur.execute(query, {"owner": owner}).fetchall()
     return [r["project"] for r in rows]
 
 
