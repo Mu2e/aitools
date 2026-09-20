@@ -35,6 +35,7 @@ import functools
 import importlib.metadata
 import logging
 import os
+import subprocess
 import sys
 import threading
 from dataclasses import dataclass
@@ -897,6 +898,43 @@ def _apply_args(args: argparse.Namespace) -> None:
     _config.max_content_bytes = args.max_content_bytes
 
 
+def _kerberos_hint() -> str:
+    """Explain a GSSAPI failure in terms of the cache actually in use.
+
+    The raw psycopg error for an expired ticket is several screens of
+    connection-attempt detail whose one useful phrase ("Ticket expired") is
+    buried in the middle -- and it never mentions KRB5CCNAME, which is
+    usually the real problem: a `systemd --user` service does not inherit
+    that variable, so it reads the DEFAULT cache while a renewal job keeps a
+    different one fresh. Naming the cache turns a confusing failure into an
+    obvious one.
+    """
+    ccname = os.environ.get("KRB5CCNAME")
+    lines = [
+        "",
+        "This is a Kerberos problem, not a database problem.",
+        f"  KRB5CCNAME: {ccname or '(unset -- using the default cache)'}",
+    ]
+    try:
+        klist = subprocess.run(
+            ["klist"] + (["-c", ccname] if ccname else []),
+            capture_output=True, text=True, timeout=10,
+        )
+        detail = (klist.stdout or klist.stderr).strip().splitlines()
+        lines += ["  klist:"] + [f"    {ln}" for ln in detail[:6]] if detail else []
+    except Exception:  # noqa: BLE001 -- klist absent/hung is not worth failing over
+        lines.append("  klist: could not be run")
+    lines += [
+        "",
+        "  If a renewal job maintains a cache somewhere other than the default,",
+        "  the service must be told where: pass --krb5-ccname to",
+        "  memory-mcp-install-unit.sh (it renders Environment=KRB5CCNAME=...),",
+        "  then restart. Note that a valid ticket in YOUR shell says nothing",
+        "  about what this service can see.",
+    ]
+    return "\n".join(lines)
+
+
 def _preflight() -> None:
     """Fail loudly on the things that make this server useless if wrong."""
     if not mcp.settings.auth:
@@ -965,6 +1003,11 @@ def main(argv: list[str] | None = None) -> None:
         _preflight()
     except Exception as e:  # noqa: BLE001 -- report cleanly, never a traceback
         print(f"FAILED: {e}", file=sys.stderr)
+        # A GSSAPI/ticket failure is almost always a credential-cache
+        # visibility problem rather than anything about the database, and the
+        # raw psycopg text does not say so. Add the diagnosis.
+        if any(k in str(e) for k in ("GSSAPI", "Kerberos", "Ticket expired", "gss")):
+            print(_kerberos_hint(), file=sys.stderr)
         sys.exit(1)
 
     if args.check:

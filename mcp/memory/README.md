@@ -147,7 +147,7 @@ psql -h ifdb11 -p 5477 mu2e_ai_prd -f sql/create_tables.sql
 | `MEMORY_MCP_MAX_CONTENT_BYTES` | `1048576` | largest accepted document |
 | `MEMORY_MCP_DB_POOL_MAX` | `4` | connection pool size |
 | `MEMORY_MCP_LOG_LEVEL` | `INFO` | logger level |
-| `KRB5CCNAME` | _(system default)_ | only if the credential cache is non-default |
+| `KRB5CCNAME` | _(system default)_ | Kerberos credential cache for the database connection — set it via `--krb5-ccname` whenever a renewal job maintains a non-default cache (see below) |
 
 Most have matching CLI flags (`--db-host`, `--write-role`, …); the flag wins.
 
@@ -188,12 +188,47 @@ cd aitools/mcp/memory
 psql -h ifdb11 -p 5477 mu2e_ai_prd -f /path/to/deploy/memory/current/.venv/share/memory-mcp/create_tables.sql
 MIKEY_KEYS_FILE=/path/to/keys /path/to/deploy/memory/current/.venv/bin/memory-mcp.sh --check
 /path/to/deploy/memory/current/.venv/bin/memory-mcp-install-unit.sh \
-  --port 8007 --mikey-keys-file /path/to/keys
+  --port 8007 --mikey-keys-file /path/to/keys \
+  --krb5-ccname FILE:/tmp/krb5cc_<uid>_auto
 ```
 
-`--mikey-keys-file` is required. If the Kerberos credential cache is in a
-non-default location, pass `--env-file` with `KRB5CCNAME=...` — as plain
-`KEY=VALUE` lines, **not** `export KEY=VALUE`, which systemd does not
+`--mikey-keys-file` is required.
+
+### Pin the Kerberos cache — `--krb5-ccname`
+
+Pass `--krb5-ccname` whenever the renewed credential cache is **not** the
+default one for the account, which is the normal situation when a cron or
+keytab job maintains it.
+
+This is the single most likely way for this server to break, because the
+symptom points away from the cause. A `systemd --user` service gets a minimal
+environment and does **not** inherit `KRB5CCNAME` from your login shell, so it
+reads the *default* cache. If a renewal job is faithfully refreshing a
+different one, `klist` in your shell shows a perfectly valid ticket while the
+service reads a stale one and every database connection fails with
+`GSSAPI continuation error ... Ticket expired`. Checking the ticket by hand
+then "confirms" everything is fine.
+
+That happened in production: the default cache sat expired for a week while a
+healthy renewed ticket lived in a `_auto` cache the service was never told
+about. Find the right value with:
+
+```bash
+klist            # note the "Ticket cache:" line -- that is the value to pass
+env -u KRB5CCNAME klist    # what the service would see with no KRB5CCNAME
+```
+
+If those two disagree, you need `--krb5-ccname`. The install script validates
+the cache with `klist -s` before writing the unit, so an expired or missing
+ticket is caught then rather than at the next restart, and it warns if you
+omit the flag while your shell has `KRB5CCNAME` set.
+
+Note the cache path is typically under `/tmp`, which is machine-local and
+subject to cleanup — if the renewal job can write somewhere more durable,
+point both it and `--krb5-ccname` there.
+
+`--env-file` remains available for any other site-specific variables. Use
+plain `KEY=VALUE` lines, **not** `export KEY=VALUE`, which systemd does not
 understand (it is not a shell, and the `export` form silently fails to set the
 variable).
 
