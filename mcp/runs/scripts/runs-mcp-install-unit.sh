@@ -4,9 +4,9 @@ set -euo pipefail
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  runs-mcp-install-unit.sh [--port <port>] [--host <host>]
+  runs-mcp-install-unit.sh --mikey-keys-file <path> | --no-auth
+                            [--port <port>] [--host <host>]
                             [--muse-release <release>]
-                            [--mikey-keys-file <path>]
                             [--timeout-seconds <secs>] [--blob-timeout-seconds <secs>]
                             [--no-enable]
 
@@ -28,7 +28,14 @@ work this server depends on is tagged and published as a real release.
 
 --mikey-keys-file sets MIKEY_KEYS_FILE (the path itself isn't sensitive,
 only the file's contents are -- mikey's own file permissions are the
-actual protection). Omit to leave auth disabled.
+actual protection). It is REQUIRED: pass it, or pass --no-auth to state
+explicitly that you want an unauthenticated server.
+
+That is deliberate. runs-mcp starts happily with auth off, so a redeploy
+that forgets this flag silently drops the Environment line and reopens the
+server to anyone who can reach the port -- with nothing failing to signal
+it. That has actually happened. Making the choice explicit means auth can
+only be turned off on purpose, never by omission.
 
 ExecStart itself is resolved from this script's own location (same trick
 runs-mcp.sh uses to find its sibling), so no path needs to be hand-edited
@@ -39,8 +46,10 @@ re-linking and re-enabling an already-installed unit is a no-op other than
 picking up the new ExecStart/Environment lines.
 
 Examples:
-  <venv>/bin/runs-mcp-install-unit.sh
-  <venv>/bin/runs-mcp-install-unit.sh --port 8006 --mikey-keys-file /path/to/keys.json
+  <venv>/bin/runs-mcp-install-unit.sh --mikey-keys-file /path/to/keys
+  <venv>/bin/runs-mcp-install-unit.sh --port 8006 \
+      --mikey-keys-file /path/to/keys --muse-release <tag>
+  <venv>/bin/runs-mcp-install-unit.sh --no-auth      # deliberately open
 USAGE
   exit 2
 }
@@ -49,6 +58,7 @@ port=8006
 host=0.0.0.0
 muse_release=""
 mikey_keys_file=""
+no_auth=0
 timeout_seconds=""
 blob_timeout_seconds=""
 do_enable=1
@@ -59,6 +69,7 @@ while [[ $# -gt 0 ]]; do
     --host) host="$2"; shift 2 ;;
     --muse-release) muse_release="$2"; shift 2 ;;
     --mikey-keys-file) mikey_keys_file="$2"; shift 2 ;;
+    --no-auth) no_auth=1; shift ;;
     --timeout-seconds) timeout_seconds="$2"; shift 2 ;;
     --blob-timeout-seconds) blob_timeout_seconds="$2"; shift 2 ;;
     --no-enable) do_enable=0; shift ;;
@@ -66,6 +77,26 @@ while [[ $# -gt 0 ]]; do
     *) echo "ERROR: unknown argument: $1" >&2; usage ;;
   esac
 done
+
+# Auth must be an explicit choice. Leaving it off by forgetting a flag has
+# happened on a real redeploy: the server starts fine either way, so nothing
+# surfaces the regression until someone probes the port.
+if [[ -n "$mikey_keys_file" && $no_auth -eq 1 ]]; then
+  echo "ERROR: --mikey-keys-file and --no-auth are mutually exclusive" >&2
+  exit 2
+fi
+if [[ -z "$mikey_keys_file" && $no_auth -eq 0 ]]; then
+  echo "ERROR: no authentication configured." >&2
+  echo "  Pass --mikey-keys-file <path> to enable mikey auth (what you almost" >&2
+  echo "  certainly want), or --no-auth to deliberately run an open server." >&2
+  echo "  Note that omitting this on a redeploy silently reopens a server that" >&2
+  echo "  was previously authenticated." >&2
+  exit 2
+fi
+if [[ -n "$mikey_keys_file" && ! -f "$mikey_keys_file" ]]; then
+  echo "ERROR: mikey keys file not found: $mikey_keys_file" >&2
+  exit 2
+fi
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 venv_root="$(cd "$script_dir/.." && pwd)"
@@ -100,6 +131,19 @@ WantedBy=default.target
 EOF
 
 echo "Wrote unit: $unit_file"
+if [[ -n "$mikey_keys_file" ]]; then
+  echo "  auth:  mikey  (keys file: $mikey_keys_file)"
+else
+  echo "  auth:  DISABLED -- this server is open to anyone who can reach port $port"
+fi
+if [[ -n "$muse_release" ]]; then
+  echo "  muse:  $muse_release"
+else
+  echo "  muse:  head  (WARNING: 'head' is a moving CI build. This process resolves"
+  echo "               it once at startup, so when head rotates and the old cvmfs"
+  echo "               build is removed, every runTool call fails until a restart."
+  echo "               Pass --muse-release <tag> for a long-lived deployment.)"
+fi
 
 mkdir -p "$HOME/.config/systemd/user"
 systemctl --user link --force "$unit_file"
