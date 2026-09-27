@@ -38,5 +38,10 @@
     "port": 8007,
     "description": "Persistent project memory for agents, stored in Postgres: put_document, get_document, list_documents, list_versions, list_projects, set_metadata. Documents are private to the owner named by the caller's token.",
     "token": "yes"
+  },
+  "kb": {
+    "port": 8008,
+    "description": "Read-only MCP server for the Mu2e knowledge base: search and read Mu2e DocDB documents (kb_search, kb_get, kb_get_image, kb_research).",
+    "token": "yes"
   }
 }
