@@ -61,6 +61,23 @@ NAMESPACE GUIDANCE:
 - Collaboration datasets: namespace='mu2e' (always 'mu2e', never 'mu2')
 - User datasets: namespace='<username>' or '<username>_*'
 
+FILE PATHS AND URLS:
+Tools that return file names (get_dataset_details, query_dataset_files) can also
+return the full path or URL for each file -- pass include_url=true. Translation is
+done by mdh (mdh_names.MFile.url), the same naming convention the rest of Mu2e uses.
+- schema: 'path' (a bare /pnfs path, the default), 'root' (xrootd), 'http', 'dcap',
+  or 'sam'. Use 'root' or 'http' for reading a file over the network; 'path' only
+  works where /pnfs is mounted.
+- location: 'disk' (/pnfs/mu2e/persistent/datasets), 'tape' (/pnfs/mu2e/tape,
+  tape-backed dCache), 'scratch', or 'nersc'. Omit it and the server probes ONE
+  file to see where the dataset actually is, preferring disk over tape -- reading
+  a disk replica avoids a tape stage. 'nersc' supports only schema path/sam.
+Returned URLs are naming-convention paths: for the probed location the file is
+known to exist, but an explicitly requested location is not verified.
+Translation is per-FILE. A Mu2e file name has 6 dot-separated fields (it carries a
+sequencer); the 5-field form is a DATASET name and has no file path of its own.
+Datasets are named by the dataset_did argument; files come back in the results.
+
 Use discover_datasets with appropriate filters. Do not perform write operations.
 """
 
@@ -160,6 +177,176 @@ def _file_record(f: dict[str, Any]) -> dict[str, Any]:
         "checksums": f.get("checksums", {}),
         "metadata": f.get("metadata", {}),
     }
+
+
+# Locations and schemas understood by mdh_names.MParameters. Mirrored here so
+# the tools can validate and advertise them without importing mdh at module
+# import time (the import is lazy, same as the metacat client's).
+MDH_LOCATIONS = ("disk", "tape", "scratch", "nersc")
+MDH_SCHEMAS = ("path", "http", "root", "dcap", "sam")
+
+# Disk before tape, per the rule that a disk replica is preferred when one
+# exists: reading from /pnfs/mu2e/persistent avoids a tape stage entirely.
+# scratch and nersc are never probed -- they are selected explicitly only,
+# since scratch is volatile and nersc is not reachable from this host.
+LOCATION_PROBE_ORDER = ("disk", "tape")
+
+
+def _mdh_mfile():
+    """mdh_names.MFile, imported lazily so that an mdh-less environment only
+    fails on the tools that actually ask for a URL (mirrors _client())."""
+    try:
+        from mdh_names import MFile
+    except Exception as exc:
+        raise RuntimeError(
+            "Could not import mdh_names.MFile. Install the 'mu2e-mdh' package "
+            "(the plain install, NOT the [full] extra) into this server's venv."
+        ) from exc
+    return MFile
+
+
+def _url_error(name: str, namespace: str, exc: Exception) -> str:
+    """Explain why a name could not be turned into a file URL.
+
+    The common case worth naming explicitly: the 5-field form (no sequencer) is
+    a DATASET name, which MFile correctly rejects and MDataset accepts. Only a
+    file has a path, so there is nothing to translate -- but "did not have 6
+    fields" alone reads like a malformed name rather than a category error.
+    """
+    try:
+        from mdh_names import MDataset
+
+        MDataset(name=name, namespace=namespace)
+    except Exception:
+        return str(exc)
+    return (
+        f"{exc} -- this is a valid DATASET name, not a file name. Only files have "
+        "paths; a file name carries a sequencer (6 fields). Use query_dataset_files "
+        "to list this dataset's files, then translate those."
+    )
+
+
+def _mdh_available() -> bool:
+    try:
+        _mdh_mfile()
+        return True
+    except Exception:
+        return False
+
+
+def _file_url(name: str, namespace: str, location: str, schema: str) -> str:
+    """Translate a Mu2e file name into a path or URL at `location`.
+
+    Pure naming-convention arithmetic inside mdh -- it reports where the file
+    *would* live, and does not itself check that anything is there.
+    """
+    MFile = _mdh_mfile()
+    return MFile(name=name, namespace=namespace).url(location=location, schema=schema)
+
+
+def _exists(path: str) -> bool:
+    # A namespace stat on the NFS-mounted dCache: no tape stage is triggered.
+    # OSError (dCache hiccup, permissions) is treated as "not here" rather than
+    # failing the whole call -- the caller still gets a URL, just from the
+    # fallback location, and the warning records that the probe was unreliable.
+    try:
+        return os.path.exists(path)
+    except OSError:
+        return False
+
+
+def _detect_location(name: str, namespace: str) -> tuple[str | None, list[dict[str, Any]]]:
+    """Probe ONE file to decide whether a dataset sits on disk or on tape.
+
+    Returns the first location in LOCATION_PROBE_ORDER that has the file, plus
+    the per-location probe results for transparency. (None, ...) when the file
+    is at neither -- the caller decides the fallback.
+    """
+    probed: list[dict[str, Any]] = []
+    for loc in LOCATION_PROBE_ORDER:
+        try:
+            path = _file_url(name, namespace, loc, "path")
+        except Exception as exc:
+            probed.append({"location": loc, "checked": None, "found": False, "error": str(exc)})
+            continue
+        found = _exists(path)
+        probed.append({"location": loc, "checked": path, "found": found})
+        if found:
+            return loc, probed
+    return None, probed
+
+
+def _add_urls(
+    records: list[dict[str, Any]],
+    location: str | None,
+    schema: str,
+) -> dict[str, Any]:
+    """Attach a `url` to every record, resolving the location once if needed.
+
+    Mutates `records` in place and returns a summary describing which location
+    was used and how it was chosen. Per-record failures (a name that is not a
+    standard 6-field Mu2e file name, say) become `url_error` on that record
+    rather than an exception for the whole call.
+    """
+    if schema not in MDH_SCHEMAS:
+        raise ValueError(f"schema must be one of: {sorted(MDH_SCHEMAS)}")
+    if location is not None and location not in MDH_LOCATIONS:
+        raise ValueError(f"location must be one of: {sorted(MDH_LOCATIONS)}")
+    if location == "nersc" and schema not in {"path", "sam"}:
+        raise ValueError("location 'nersc' supports only schema 'path' or 'sam'")
+
+    info: dict[str, Any] = {
+        "location": location,
+        "schema": schema,
+        "location_source": "explicit" if location else None,
+        "probe": None,
+        "warnings": [],
+    }
+
+    resolved = location
+    if resolved is None:
+        # "Check one file": probe the first record whose name mdh can parse,
+        # then apply that answer to the whole batch. Datasets are stored as a
+        # unit, so one file is representative and N stats are not needed.
+        probe_target = None
+        for rec in records:
+            if rec.get("name") and rec.get("namespace"):
+                probe_target = rec
+                break
+
+        if probe_target is None:
+            resolved = "tape"
+            info["location_source"] = "default"
+            info["warnings"].append(
+                "No usable file name to probe; defaulted to location='tape'."
+            )
+        else:
+            found, probed = _detect_location(probe_target["name"], probe_target["namespace"])
+            info["probe"] = {"file": probe_target["name"], "checked": probed}
+            if found:
+                resolved = found
+                info["location_source"] = "probed"
+            else:
+                resolved = "tape"
+                info["location_source"] = "default"
+                info["warnings"].append(
+                    f"Probe file {probe_target['name']} was found at neither "
+                    f"{' nor '.join(LOCATION_PROBE_ORDER)}; defaulted to location='tape'. "
+                    "URLs are naming-convention paths and may not resolve."
+                )
+        info["location"] = resolved
+
+    for rec in records:
+        name, namespace = rec.get("name"), rec.get("namespace")
+        if not name or not namespace:
+            rec["url_error"] = "record has no name/namespace to translate"
+            continue
+        try:
+            rec["url"] = _file_url(name, namespace, resolved, schema)
+        except Exception as exc:
+            rec["url_error"] = _url_error(name, namespace, exc)
+
+    return info
 
 
 # mcp>=2.0 renamed FastMCP -> MCPServer; created at module scope (registry-mcp
@@ -292,13 +479,18 @@ def discover_datasets(
 @mcp.tool(
     description=(
         "Get dataset details by DID, optionally with an example file and metadata keys. "
-        "Read-only."
+        "Set include_url=true to also translate the sample file name into a path or URL "
+        "(schema: path/http/root/dcap/sam; location: disk/tape/scratch/nersc, auto-detected "
+        "disk-then-tape when omitted). Read-only."
     )
 )
 def get_dataset_details(
     dataset_did: str,
     include_sample_file: bool = True,
     include_sample_metadata: bool = True,
+    include_url: bool = False,
+    location: str | None = None,
+    schema: str = "path",
 ) -> dict[str, Any]:
     client = _client()
 
@@ -322,13 +514,20 @@ def get_dataset_details(
                     out["sample_metadata_keys"] = sorted(sample["metadata"].keys())
             out["sample_file"] = sample
 
+    if include_url:
+        samples = [out["sample_file"]] if out.get("sample_file") else []
+        out["url_info"] = _add_urls(samples, location, schema)
+
     return out
 
 
 @mcp.tool(
     description=(
         "Query files from one dataset using common filters (time, size, events, run/subrun) "
-        "and sorting. Read-only."
+        "and sorting. Set include_url=true to also translate each file name into a path or "
+        "URL (schema: path/http/root/dcap/sam; location: disk/tape/scratch/nersc). When "
+        "location is omitted, one file is probed to see whether the dataset is on disk or "
+        "tape-backed dCache, disk preferred. Read-only."
     )
 )
 def query_dataset_files(
@@ -348,6 +547,9 @@ def query_dataset_files(
     limit: int = 100,
     offset: int = 0,
     include_metadata: bool = False,
+    include_url: bool = False,
+    location: str | None = None,
+    schema: str = "path",
 ) -> dict[str, Any]:
     allowed_sort = {"created_timestamp", "size", "run", "subrun", "n_events", "name"}
     if sort_by not in allowed_sort:
@@ -454,9 +656,15 @@ def query_dataset_files(
         for r in results:
             r.pop("metadata", None)
 
+    url_info = None
+    if include_url:
+        url_info = _add_urls(results, location, schema)
+        warnings.extend(url_info.pop("warnings"))
+
     return {
         "dataset_did": dataset_did,
         "query": query,
+        "url_info": url_info,
         "applied_filters": {
             "created_after_iso_utc": created_after_iso_utc,
             "created_before_iso_utc": created_before_iso_utc,
@@ -476,6 +684,9 @@ def query_dataset_files(
             "limit": limit,
             "offset": offset,
             "include_metadata": include_metadata,
+            "include_url": include_url,
+            "location": location,
+            "schema": schema,
         },
         "total_matches": len(filtered_rows),
         "returned": len(results),
@@ -497,6 +708,14 @@ def get_server_info() -> dict[str, Any]:
             "server_url": os.environ.get("METACAT_SERVER_URL", DEFAULT_METACAT_SERVER_URL),
             "auth_server_url": os.environ.get("METACAT_AUTH_SERVER_URL", DEFAULT_METACAT_AUTH_SERVER_URL),
         },
+        "url_translation": {
+            "available": _mdh_available(),
+            "provider": "mdh_names.MFile.url (package: mu2e-mdh, plain install)",
+            "locations": list(MDH_LOCATIONS),
+            "schemas": list(MDH_SCHEMAS),
+            "probe_order": list(LOCATION_PROBE_ORDER),
+            "enabled_by": "include_url=true on get_dataset_details / query_dataset_files",
+        },
         "notes": [
             "Uses metacat.webapi.MetaCatClient() (pip package: metacat-client), defaulting to "
             "Mu2e's production MetaCat server; override via the METACAT_SERVER_URL / "
@@ -505,6 +724,9 @@ def get_server_info() -> dict[str, Any]:
             "Use discover_datasets filters before expensive detail calls.",
             "Collaboration namespace naming uses 'mu2e' (never 'mu2').",
             "User-owned namespaces are typically <username> or <username>_*.",
+            "include_url=true returns paths/URLs via mdh; with no explicit location the "
+            "server stats one file (disk first, then tape) and applies that location to "
+            "the whole result set.",
         ],
         "tools": [
             "discover_datasets",

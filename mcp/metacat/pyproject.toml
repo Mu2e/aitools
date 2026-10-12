@@ -15,7 +15,17 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "mcp>=2.0.0",
-  "metacat-client>=4.1.3"
+  "metacat-client>=4.1.3",
+  # The PLAIN mdh install, deliberately not "mu2e-mdh[full]". The bare
+  # package is pure standard library (its own dependencies list is empty),
+  # and supplies mdh_names.MFile.url() -- the name-to-path/URL translation
+  # this server needs. The "full" extra would drag in pinned rucio-clients,
+  # datadispatcher-client and a second pinned metacat-client, none of which
+  # are wanted here and the last of which would fight the floor above.
+  #
+  # Direct git reference because mu2e-mdh is not published on PyPI. Pinned
+  # to a tag, not a branch, so a resolve is reproducible; bump deliberately.
+  "mu2e-mdh @ git+https://github.com/Mu2e/mdh@v01_12_00"
 ]
 
 [project.scripts]
