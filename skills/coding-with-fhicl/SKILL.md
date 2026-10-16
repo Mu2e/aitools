@@ -3,8 +3,8 @@ name: coding-with-fhicl
 description: Author, review, and troubleshoot Mu2e FHiCL configuration files for Offline, Production, and trigger workflows. Use when editing .fcl files, composing include chains, configuring modules/services, or debugging job configuration failures.
 compatibility: Requires Mu2e offline environment, mu2einit, muse setup, and familiarity with Production/Offline repositories
 metadata:
-  version: "1.3.0"
-  last-updated: "2026-02-18"
+  version: "1.4.0"
+  last-updated: "2026-10-14"
 ---
 
 # Coding with FHiCL
@@ -81,6 +81,7 @@ Include/path resolution rule:
 
 - The file passed to `mu2e -c <file.fcl>` can be anywhere (absolute or relative path).
 - `#include` targets are resolved via `FHICL_FILE_PATH` (colon-separated search paths), typically configured by `muse setup`.
+- Absolute paths do not work in `#include`; see "Gotchas" below.
 - If includes fail unexpectedly, inspect `FHICL_FILE_PATH` first.
 
 ---
@@ -291,6 +292,54 @@ Expected evidence in annotations:
 
 ---
 
+## Gotchas
+
+### `#include` does not take absolute paths
+
+`#include "/abs/path/base.fcl"` fails at startup (`Can't find file`, exit code 90): targets
+are searched only in the `FHICL_FILE_PATH` directories. This bites generated per-job
+wrapper files that pull in a base config from a working-copy directory. Prepend (so your
+copy wins) that directory and include by relative name:
+
+```bash
+export FHICL_FILE_PATH="/path/to/work/fcl:${FHICL_FILE_PATH}"
+```
+
+```fcl
+#include "base.fcl"   # overrides go after the include
+```
+
+Only the in-file `#include` is restricted; `mu2e -c <path>` takes any filesystem path.
+
+### Non-ASCII characters break the parser
+
+Non-ASCII bytes are rejected anywhere in the file, including `#` comments and quoted string
+values (em dashes, micro signs and smart quotes are the usual culprits): `fhicl-dump` aborts with
+`Parse error ... detected at or near line L, character C`, and art exits with code 90.
+Use plain ASCII (`--`, `'`, `us`).
+Find offenders with `grep -nP '[^\x00-\x7F]' file.fcl`.
+
+### `@table::` merges, it does not replace
+
+`@table::name` inside a table body splices in the keys of `name`; keys written after it
+override, all others are kept. `@local::name` instead places a copy of the whole value.
+
+```fcl
+physics.producers.MyModule.Settings: {
+  @table::Subsystem.NominalSettings   # start from the nominal table
+  SomeFlag : true                     # override only what differs
+}
+```
+
+### Overrides must come after the includes they modify
+
+Includes and epilogs apply in order and later assignments win, so a setting placed above
+an `#include` can be silently reset by it. Put overrides (geometry, database settings,
+path tweaks) after the last `#include`, and repeat any that an epilog resets. Check with
+`fhicl-dump -a` that the key's annotation points at your file, not the epilog.
+
+---
+
 ## Troubleshooting Guide
 
 ### Validated-FHiCL contract mismatch
@@ -360,7 +409,8 @@ Checks:
 
 1. Confirm `muse setup` was run in the current shell.
 2. Print `FHICL_FILE_PATH` and verify expected directories are present and ordered.
-3. Use absolute path for the top-level `-c` file if current directory is ambiguous.
+3. Use absolute path for the top-level `-c` file if current directory is ambiguous (never for `#include`).
+   Check also for non-ASCII characters in comments or strings (exit code 90).
 4. Re-run `fhicl-dump -a` and inspect annotation origins for the include result.
 
 ### Unknown parameter/module label
