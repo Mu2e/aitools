@@ -7,8 +7,79 @@ a `pyproject.toml`-based package, installed with plain `uv` primitives (`uv
 venv` + `uv pip install`, via git subdirectory syntax) into a visible,
 versioned directory in a service account, run persistently under `systemd
 --user`, and reachable over HTTP instead of spawned per-connection over
-stdio. This conversion only changes transport/install/run mechanics --
-none of the DQM query logic changed.
+stdio.
+
+The query logic has since moved out of this package entirely, into the shared
+`mu2e-dqm` distribution in the Mu2e/DQM repository — see the next section.
+
+## Where the query logic lives
+
+All database access is in **`dqm.reader`**, part of the **`mu2e-dqm`**
+distribution in the [Mu2e/DQM](https://github.com/Mu2e/DQM) repository at
+`DQM/python/dqm/`. This server holds no SQL, no CSV parsing, and no
+schema knowledge beyond the tool descriptions — it is a thin, deliberately
+limited window onto that library, shared with the DQM plotting scripts and
+with bulk analysis work.
+
+The split matters because the two callers want opposite things. `dqm.reader`
+returns pandas DataFrames and is built to pull the whole table — `dqm.numbers`
+holds ~475k rows today and is expected to reach millions, which as a DataFrame
+is ~30 MB and a few seconds, and as per-row dicts would be near a gigabyte.
+This server never wants more than a few hundred rows, because its output has to
+fit in a model's context window. So it caps hard and converts to JSON at the
+boundary; anything bigger is the library's job, called directly.
+
+### How `mu2e-dqm` gets installed
+
+It ships in a different repository, but it is a normal installable package, so
+it comes in as a pinned git dependency — nothing extra to do:
+
+```toml
+dependencies = [
+  "mcp>=2.0.0",
+  "mu2e-dqm @ git+https://github.com/Mu2e/DQM@main#subdirectory=python"
+]
+```
+
+The single `uv pip install "dqm-mcp @ git+..."` in `install.sh` pulls it in
+along with its own `pandas`/`requests`. The `[web]` extra is deliberately not
+requested — this server has no use for dash/plotly, and the single-distribution
+layout means those modules ship as inert files it never imports. `--check`
+prints the resolved `mu2e-dqm` version, and `get_server_info()` reports the
+version and module path at runtime, so which reader a deployment is actually
+running is never a guess.
+
+> **Pin a tag.** The dependency currently tracks `main`, because `mu2e-dqm` is
+> unreleased as of DQM `v1.4.0`. Once a DQM release contains it, change `@main`
+> to that tag — tracking a branch means a rebuild can silently pick up reader
+> changes never tested against this server.
+
+To deploy against a different reader revision without editing the pin — trying
+a reader branch before tagging it — `install.sh` takes `--dqm-ref`:
+
+```bash
+./scripts/install.sh /path/to/deploy/dqm v0.3.0 --dqm-ref my-branch
+```
+
+That installs the named revision *after* the main install, because pip resolves
+a direct URL requirement to exactly that URL and would otherwise put the pinned
+one back. Use it for testing; bump the pin in `pyproject.toml` for anything
+permanent, so a release stays reproducible from its ref alone.
+
+### Developing against a checkout
+
+`DQM_READER_PATH` points at a DQM `python/` directory and takes precedence over
+the installed copy, for working on the reader and this server together without
+reinstalling between edits:
+
+```bash
+export DQM_READER_PATH=/path/to/DQM/python
+```
+
+It has to be an environment variable, not a CLI flag: the import happens at
+module load, before argument parsing. In a systemd unit it would go in an
+`Environment=` line — though for a deployment, pinning the dependency is the
+better answer.
 
 ## Scope
 
@@ -17,11 +88,12 @@ none of the DQM query logic changed.
 - Fixed endpoint default: QE nocache URL (`:9443`)
 - Streamable-HTTP transport
 - JSON table responses intended for client-side LLM interpretation
+- Hard ceiling of 1000 rows per response, whatever `limit` is passed
 
 ## Exposed MCP tools
 
 - `get_server_info()`
-  - server defaults, QE endpoint/dbname, limits
+  - server defaults, backend `dqm.reader` version/path, QE endpoint/dbname, code enums
 - `list_sources(...)`
   - list source tuples from `dqm.sources`
 - `list_versions(...)`
@@ -33,7 +105,33 @@ none of the DQM query logic changed.
 - `query_metrics(...)`
   - query `dqm.numbers` or `dqm.limits` with source/value/interval filters
   - defaults: `recent_days=10`, `limit=100`
-  - supports expanded source/value/interval payloads
+  - `summarize=true` — count/mean/min/max/median, time span, endpoints, and
+    code tallies over *every* matching row, ignoring the display limit
+  - `downsample_to=N` — a timeline reduced to about N time bins, each carrying
+    the bin's mean, min and max so excursions survive the reduction
+
+### Truncation and totals
+
+Every response carries `counts.truncated`. When it is true,
+`counts.total_rows` holds the *exact* number of matching rows, so a client can
+report "showing 100 of 41,203" rather than leaving an ambiguous short result to
+be misread as "there is no recent data here."
+
+An empty result with `truncated=false` is authoritative. Filters are pushed
+into the database rather than applied after a bounded scan, so an empty result
+means no matching rows exist — it is not an artifact of a scan window. This
+replaces the old `scan_limit`/`scan_complete` mechanism, which existed because
+a filter that could not be pushed down fell back to scanning the most recent N
+rows: a low-rate source sharing a table with high-rate ones could then have its
+rows fall outside any scan window, no matter how large, because the required
+window depended on everyone else's insertion rate rather than on the query's
+own selectivity. `scan_limit` is gone; nothing replaces it, because nothing
+needs to.
+
+Note that `dqm.numbers` and `dqm.limits` are populated independently, with no
+foreign key between them — an interval can legitimately carry limits and no
+measurements. An empty `metric_table='numbers'` result does not imply the
+interval is unused.
 
 ## How it's installed and started
 
@@ -45,11 +143,11 @@ target venv:
   script-files`), installed as a sibling of `dqm-mcp` in the same
   directory. It's the place for any server-side environment setup a real
   MCP might need (e.g. `spack load ...`) before it `exec`s its sibling
-  `dqm-mcp`. dqm-mcp itself needs no such setup -- it's a plain HTTP client
-  (stdlib + `requests`) reaching the Query Engine's public HTTPS endpoint
-  with no credentials, no mu2e/cvmfs offline-software environment, and no
-  mu2e-specific imports -- so the wrapper is currently a no-op passthrough,
-  same as registry-mcp.sh. (An earlier version of this wrapper sourced
+  `dqm-mcp`. It still needs no offline-software environment and the wrapper
+  remains a no-op passthrough: through `dqm.reader` -- installed into this
+  same venv as part of the pinned `mu2e-dqm` dependency -- it is a plain HTTP client (`requests` +
+  `pandas`) reaching the Query Engine's public HTTPS endpoint with no
+  credentials and no mu2e/cvmfs setup. (An earlier version of this wrapper sourced
   `setupmu2e-art.sh` + `muse setup ops`, carried over unexamined from the
   old stdio launcher; removed after confirming the QE endpoint is reachable
   in a fully stripped environment -- `env -i`, no Kerberos ticket -- and
@@ -117,10 +215,16 @@ when a flag isn't given:
 | `--port` | `DQM_MCP_PORT` | `8001` |
 | `--qe-base-url` | `DQM_QE_BASE_URL` | `https://dbdata0vm.fnal.gov:9443/QE/mu2e/prod/app/SQ/query?` |
 | `--qe-dbname` | `DQM_QE_DBNAME` | `mu2e_dqm_prd` |
-| `--qe-timeout-seconds` | `DQM_QE_TIMEOUT_SECONDS` | `30` |
+| `--qe-timeout-seconds` | `DQM_QE_TIMEOUT_SECONDS` | `120` |
+| *(none — see above)* | `DQM_READER_PATH` | unset (use the installed `mu2e-dqm`) |
 
 `--qe-base-url` must point at the nocache endpoint (`:9443`); a `:8444/`
-cache-endpoint URL is rejected at startup.
+cache-endpoint URL is rejected at startup (by `dqm.reader` itself, so scripts
+get the same protection).
+
+The QE timeout default rose from 30s to 120s with the move to `dqm.reader`,
+which is sized for bulk pulls — a full unfiltered table fetch takes a few
+seconds today and will grow. Nothing this server issues comes close.
 
 `DQM_MCP_LOG_LEVEL` (default `INFO`) still controls log verbosity, same as
 before this conversion.
@@ -188,11 +292,16 @@ via `list_mcp_servers`/`GET /registry`/`GET /list`.
   outside traffic is blocked by firewall. No auth is implemented yet.
 - Port convention for this workspace: `registry` on 8000, other HTTP MCPs on
   8001-8009 as they're migrated from stdio; `dqm` takes 8001.
-- All database reads are over Query Engine HTTP.
+- All database reads go through `dqm.reader` over Query Engine HTTP.
 - Default behavior is nocache endpoint use.
 - Query defaults are intentionally conservative (`limit=100`, recent window
-  10 days).
-- If filters are selective, increase `scan_limit` in `query_metrics(...)`.
+  10 days), and `limit` is clamped to 1000 no matter what is passed.
+- For a result larger than the cap, use `summarize=true` or `downsample_to=N`
+  rather than paging with `offset` — paging a 40,000-row timeline 100 at a
+  time exhausts the context long before it finishes, and the summary answers
+  "is this drifting?" just as well.
+- For genuine bulk work (machine learning, retrospective analysis over the
+  whole table), skip this server and import `dqm.reader` directly.
 - Uses `mcp>=2.0.0` (`FastMCP` renamed to `MCPServer`, host/port moved from
   the constructor to `run()`) -- see `../registry/README.md`'s Notes section
   for the full API-change writeup, which applies identically here.

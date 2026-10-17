@@ -1,20 +1,67 @@
+"""Read-only MCP server exposing Mu2e DQM metrics to a model.
+
+All database access lives in `dqm.reader`, part of the `mu2e-dqm` distribution
+in the Mu2e/DQM repository, shared with the display applications and with bulk
+analysis work. This module is only the narrow window onto it: it caps every
+result at something that fits in a context window, converts frames to JSON,
+and tells the model when a result was cut short and what it can ask for
+instead.
+
+That division is the point. The reader is built to pull the whole table -- a
+million rows as a typed DataFrame -- while nothing here should ever return
+more than a few hundred rows. When a query matches more than that, the answer
+is not to page through it but to ask for `summarize=True` or `downsample_to`,
+which reduce the data in pandas and return the shape rather than the rows.
+"""
+
 from __future__ import annotations
 
 import argparse
-import csv
 import importlib.metadata
-import io
 import logging
 import os
 import sys
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import requests
 from mcp.server.mcpserver import MCPServer
 
 LOGGER = logging.getLogger("dqm_mcp")
+
+
+def _import_reader():
+    """Import the dqm reader, honouring a checkout override.
+
+    Normally `mu2e-dqm` is simply installed in this venv -- it is a pinned git
+    dependency in pyproject.toml, so `uv pip install` brings it along. Setting
+    DQM_READER_PATH to a DQM/python directory takes precedence over that, for
+    developing the reader and this server together against a working tree
+    without reinstalling between edits. It has to be an environment variable
+    rather than a CLI flag: the import happens at module load, before argparse
+    ever runs.
+    """
+    override = os.environ.get("DQM_READER_PATH")
+    if override and override not in sys.path:
+        # Ahead of site-packages, so the checkout wins over any installed copy.
+        sys.path.insert(0, override)
+    try:
+        import dqm
+        from dqm import reader as dqm_reader
+    except ImportError as exc:  # pragma: no cover - deployment error path
+        raise ImportError(
+            "cannot import dqm.reader, which holds every database query this "
+            "server makes. It should have been installed as a dependency "
+            "(mu2e-dqm @ git+https://github.com/Mu2e/DQM#subdirectory=python); "
+            "install it into this venv, or set DQM_READER_PATH to a DQM "
+            f"checkout's python/ directory. (import failed: {exc})"
+        ) from exc
+    return dqm, dqm_reader
+
+
+dqm, dqm_reader = _import_reader()
+DqmReader = dqm_reader.DqmReader
+to_records = dqm_reader.to_records
+CODE_VALUES = dqm_reader.CODE_VALUES
+ALARM_VALUES = dqm_reader.ALARM_VALUES
 
 
 def _server_version() -> str:
@@ -27,20 +74,23 @@ def _server_version() -> str:
     except importlib.metadata.PackageNotFoundError:
         return "unknown (not installed as a package)"
 
-DEFAULT_DBNAME = "mu2e_dqm_prd"
-DEFAULT_QE_NOCACHE_URL = "https://dbdata0vm.fnal.gov:9443/QE/mu2e/prod/app/SQ/query?"
-DEFAULT_TIMEOUT_SECONDS = 30
+
+# Sized for a context window, not for the database. A few hundred rows of JSON
+# is already several thousand tokens, so MAX_LIMIT is a hard ceiling no
+# argument can raise -- a caller that wants more than this wants the reader
+# directly, or wants summarize/downsample_to instead.
 DEFAULT_LIMIT = 100
+MAX_LIMIT = 1000
 DEFAULT_RECENT_DAYS = 10
-DEFAULT_SCAN_LIMIT = 2000
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8001
 
 READ_ONLY_INSTRUCTIONS = (
-    "Read-only MCP server for Mu2e DQM metrics via Query Engine over HTTP. "
-    "Always use nocache endpoint access semantics. "
-    "Return structured JSON rows from dqm.sources, dqm.values, dqm.intervals, dqm.numbers, and dqm.limits.\n\n"
-    "DATA MODEL (5 tables, 3 catalogs + 2 measurement tables):\n"
+    "Read-only MCP server for Mu2e DQM metrics, backed by the shared dqm.reader "
+    "library over the Query Engine. Returns structured JSON rows from "
+    "dqm.sources, dqm.values, dqm.intervals, dqm.numbers, dqm.limits, "
+    "dqm.alarms and dqm.alarm_causes.\n\n"
+    "DATA MODEL (7 tables: 3 catalogs, 2 measurement tables, 2 alarm tables):\n"
     "- dqm.sources (sid): one monitored source, uniquely identified by "
     "(process, stream, aggregation, version) -- e.g. process='valNightly', "
     "stream='reco', aggregation='day'. list_sources / list_versions read this.\n"
@@ -51,263 +101,131 @@ READ_ONLY_INSTRUCTIONS = (
     "'rmsEnergy'). This catalog is source-independent: it doesn't say which sources "
     "actually report a given vid, only that the name exists. list_values reads this.\n"
     "- dqm.intervals (iid): one time/run bucket FOR ONE SOURCE (sid is a foreign key "
-    "here) -- a run/subrun range and/or a start/end timestamp range, unique per "
-    "(sid, start_run, start_subrun, end_run, end_subrun, start_time, end_time). Only a "
-    "start (of either the run range or the time range) is strictly required; end values "
-    "are optional, and a run range and a time range may both be present on the same "
-    "interval. A 'day' aggregation source gets roughly one interval per calendar day. "
-    "list_intervals reads this, scoped by sid.\n"
+    "here) -- a run/subrun range and/or a start/end timestamp range. A 'day' "
+    "aggregation source gets roughly one interval per calendar day; a 'file' "
+    "aggregation source gets one per file. list_intervals reads this.\n"
     "- dqm.numbers (nid): the actual measurement -- one row per (sid, vid, iid) "
-    "triple (that combination is unique), holding valuex (the measured value), sigma "
-    "(uncertainty; 0.0 means not applicable/not computed, not literally zero error), "
-    "and code -- a FIXED enum (DqmNumber::codeValues in Mu2e/DQM's DQM/inc/DqmNumber.hh, "
-    "not source-defined): OK=0, lowStats=1, missing=2, error=3.\n"
-    "- dqm.limits (lid): the acceptable-range definition for that SAME (sid, vid, "
-    "iid) triple -- also unique per (vid, sid, iid), same foreign keys as numbers. "
-    "Structurally it mirrors dqm.numbers exactly; the only difference is payload: "
-    "llimit/ulimit (the acceptable lower/upper bounds that metric was expected to "
-    "fall within for that interval) and alarmcode instead of valuex and code. alarmcode "
-    "is also a fixed enum (DqmLimit::alarmValues in DQM/inc/DqmLimit.hh): ignore=0, "
-    "warnOnly=1, standard=2, critical=3. To check whether a given measurement was "
-    "in-spec, look up the same (sid, vid, iid) in dqm.limits -- but a numbers row and a "
-    "limits row for the same key are NOT guaranteed to both exist; there is no foreign "
-    "key between the two tables, they are independently populated.\n\n"
+    "triple, holding valuex (the measured value), sigma (uncertainty; 0.0 means not "
+    "applicable/not computed, not literally zero error), and code -- a FIXED enum "
+    "(DqmNumber::codeValues in Mu2e/DQM's DQM/inc/DqmNumber.hh, not source-defined): "
+    "OK=0, lowStats=1, missing=2, error=3.\n"
+    "- dqm.limits (lid): the acceptable-range definition for that SAME (sid, vid, iid) "
+    "triple. Structurally it mirrors dqm.numbers; the only difference is payload: "
+    "llimit/ulimit (the bounds the metric was expected to fall within) and alarmcode "
+    "instead of valuex and code. alarmcode is also a fixed enum (DqmLimit::alarmValues "
+    "in DQM/inc/DqmLimit.hh): ignore=0, warnOnly=1, standard=2, critical=3. To check "
+    "whether a measurement was in-spec, look up the same (sid, vid, iid) in dqm.limits "
+    "-- but the two tables are populated independently with no foreign key between "
+    "them, so a numbers row and a limits row for the same key are NOT guaranteed to "
+    "both exist. An interval can legitimately hold limits and no numbers.\n\n"
     "query_metrics(metric_table=...) queries dqm.numbers (default) or dqm.limits -- "
-    "same sid/vid/interval filtering logic applies to both, since they share the same key shape.\n\n"
-    "The natural, meaningful query is one sid + one vid: that returns a timeline of one "
-    "variable across intervals, suitable for trending/plotting. A bare sid with no vid "
-    "mixes every variable that source tracks into one undifferentiated pile -- rarely "
-    "what you want, and easy to misread as 'this stream has no recent data' when really "
-    "the results just contain a jumble of unrelated variables (or, if scan_complete is "
-    "false, an incomplete scan -- see query_metrics). Typical flow: list_sources to find "
-    "sid, list_values to find vid, then query_metrics(sid=..., vid=...) -- and "
-    "query_metrics(sid=..., vid=..., metric_table='limits') for the matching thresholds."
+    "the same sid/vid/interval filtering applies to both, since they share a key shape.\n\n"
+    "THE NATURAL QUERY is one sid + one vid: that returns a timeline of one variable "
+    "across intervals, suitable for trending. A bare sid with no vid mixes every "
+    "variable that source tracks into one pile, on unrelated scales -- rarely what you "
+    "want. Typical flow: list_sources to find sid, list_values to find vid, then "
+    "query_metrics(sid=..., vid=...).\n\n"
+    "SIZE. This server is a limited window onto a database holding hundreds of "
+    "thousands of measurements, heading for millions. Results are capped at "
+    f"{MAX_LIMIT} rows. Every response carries counts.truncated; when it is true, "
+    "- dqm.alarms (aid): one alarm EPISODE, identified by "
+    "(algo, config, subject, sid) and deliberately NOT by interval. A condition "
+    "seen again extends the existing episode, so a single row can span many runs "
+    "and many days; its run/time range is a hull and does not claim every run "
+    "inside it fired. Two independent lifecycles: `open` (is it still being "
+    "reported, maintained by the evaluators) and `status` (what a human decided "
+    "-- active, acknowledged, silenced, retired, deleted). These are orthogonal: "
+    "an acknowledged problem that is still occurring stays open, and an episode "
+    "nobody has looked at stays status='active'. A terminal status also closes "
+    "the episode; closing one does not change its status. list_alarms reads "
+    "this.\n"
+    "- dqm.alarm_causes (cid): the evidence for an episode -- which interval "
+    "(iid) and which metric (vid) was seen, at what level. A NULL vid is a "
+    "global test, about the interval rather than one metric. This is the ground "
+    "truth for what actually fired, as against the episode's hull. "
+    "get_alarm_causes reads this.\n"
+    "- LEVELS: an alarm or cause `level` is 0-3 = message, warn, alarm, severe. "
+    "This is NOT the `alarmcode` on a dqm.limits row (0-3 = ignore, warnOnly, "
+    "standard, critical). Both are small integers and they mean different "
+    "things; each tool returns the enum that applies to its own rows.\n\n"
+    "counts.total_rows gives the exact number of matching rows, so report "
+    "'showing N of TOTAL' rather than implying the result is complete. Do NOT try to "
+    "page through a large result -- use query_metrics(summarize=True) for statistics "
+    "and range, or downsample_to=N for a timeline reduced to about N points that "
+    "keeps its shape. For genuine bulk work (machine learning, retrospective analysis "
+    "over the whole table) this server is the wrong tool: import dqm.reader from the "
+    "Mu2e/DQM repository and query it directly.\n\n"
+    "An empty result with truncated=false is authoritative -- there really is no "
+    "matching data. Filters are pushed into the database, so an empty result is not "
+    "an artifact of a scan window."
 )
 
-
-@dataclass
-class QEClient:
-    base_url: str
-    dbname: str
-    timeout_seconds: int
-
-    def query_csv(
-        self,
-        table: str,
-        columns: str,
-        where: list[str] | None = None,
-        order: str | None = None,
-        limit: int | None = None,
-    ) -> list[dict[str, str]]:
-        params: list[tuple[str, str]] = [
-            ("dbname", self.dbname),
-            ("t", table),
-            ("c", columns),
-            ("f", "csv"),
-        ]
-
-        if where:
-            for clause in where:
-                params.append(("w", clause))
-        if order:
-            params.append(("o", order))
-        if limit is not None:
-            params.append(("l", str(limit)))
-
-        response = requests.get(self.base_url, params=params, timeout=self.timeout_seconds)
-        response.raise_for_status()
-
-        payload = response.text.strip()
-        if not payload:
-            return []
-
-        reader = csv.DictReader(io.StringIO(payload))
-        return list(reader)
-
-
-def _configure_logging() -> None:
-    logging.basicConfig(
-        level=os.environ.get("DQM_MCP_LOG_LEVEL", "INFO"),
-        stream=sys.stderr,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-
-
-def _parse_int(value: Any) -> int | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    try:
-        return int(text)
-    except ValueError:
-        return None
-
-
-def _parse_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    try:
-        return float(text)
-    except ValueError:
-        return None
-
-
-def _parse_dt(value: Any) -> datetime | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    try:
-        return datetime.fromisoformat(text)
-    except ValueError:
-        return None
-
-
-def _parse_dt_user(value: str) -> datetime:
-    text = value.strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    dt = datetime.fromisoformat(text)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
-
-
-def _normalize_limit(limit: int) -> int:
-    if limit <= 0:
-        raise ValueError("limit must be > 0")
-    return limit
-
-
-def _apply_offset(rows: list[dict[str, Any]], limit: int, offset: int) -> list[dict[str, Any]]:
-    if offset < 0:
-        raise ValueError("offset must be >= 0")
-    return rows[offset : offset + limit]
-
-
-def _build_qe_client(base_url: str, dbname: str, timeout_seconds: int) -> QEClient:
-    if ":8444/" in base_url:
-        raise ValueError("DQM_QE_BASE_URL points to cache endpoint (:8444); nocache (:9443) is required")
-    return QEClient(base_url=base_url, dbname=dbname, timeout_seconds=timeout_seconds)
-
-
-def _sources_by_id(client: QEClient, sids: set[int]) -> dict[int, dict[str, Any]]:
-    if not sids:
-        return {}
-    out: dict[int, dict[str, Any]] = {}
-    for sid in sids:
-        rows = client.query_csv(
-            "dqm.sources",
-            columns="sid,process,stream,aggregation,version",
-            where=[f"sid:eq:{sid}"],
-            limit=1,
-        )
-        if rows:
-            row = rows[0]
-            out[sid] = {
-                "sid": sid,
-                "process": row.get("process"),
-                "stream": row.get("stream"),
-                "aggregation": row.get("aggregation"),
-                "version": row.get("version"),
-            }
-    return out
-
-
-def _values_by_id(client: QEClient, vids: set[int]) -> dict[int, dict[str, Any]]:
-    if not vids:
-        return {}
-    out: dict[int, dict[str, Any]] = {}
-    for vid in vids:
-        rows = client.query_csv(
-            "dqm.values",
-            columns="vid,groupx,subgroup,namex",
-            where=[f"vid:eq:{vid}"],
-            limit=1,
-        )
-        if rows:
-            row = rows[0]
-            out[vid] = {
-                "vid": vid,
-                "groupx": row.get("groupx"),
-                "subgroup": row.get("subgroup"),
-                "namex": row.get("namex"),
-            }
-    return out
-
-
-def _intervals_by_id(client: QEClient, iids: set[int]) -> dict[int, dict[str, Any]]:
-    if not iids:
-        return {}
-    out: dict[int, dict[str, Any]] = {}
-    for iid in iids:
-        rows = client.query_csv(
-            "dqm.intervals",
-            columns="iid,sid,start_run,start_subrun,end_run,end_subrun,start_time,end_time",
-            where=[f"iid:eq:{iid}"],
-            limit=1,
-        )
-        if rows:
-            row = rows[0]
-            out[iid] = {
-                "iid": iid,
-                "sid": _parse_int(row.get("sid")),
-                "start_run": _parse_int(row.get("start_run")),
-                "start_subrun": _parse_int(row.get("start_subrun")),
-                "end_run": _parse_int(row.get("end_run")),
-                "end_subrun": _parse_int(row.get("end_subrun")),
-                "start_time": row.get("start_time"),
-                "end_time": row.get("end_time"),
-            }
-    return out
-
-
-# mcp>=2.0 renamed FastMCP -> MCPServer; created at module scope (registry-mcp
-# pattern) rather than inside a factory function, so tools are decorated once
-# at import time and read their runtime config from `_state` per call.
 mcp = MCPServer("dqm", instructions=READ_ONLY_INSTRUCTIONS)
 
-# Set once by main() from CLI args (env vars as fallback defaults, same
-# precedence as registry-mcp) before mcp.run(); read per-call by the tools
-# below. The defaults here match the argparse defaults so importing this
-# module without calling main() (e.g. --check, or ad-hoc tooling) still gets
-# a working client.
+# Set once by main() from CLI args (env vars as fallback defaults) before
+# mcp.run(); read per-call by the tools below. The default here matches the
+# argparse default so importing this module without calling main() still gets
+# a working reader.
 _state: dict[str, Any] = {
     "host": DEFAULT_HOST,
     "port": DEFAULT_PORT,
-    "client": QEClient(
-        base_url=DEFAULT_QE_NOCACHE_URL,
-        dbname=DEFAULT_DBNAME,
-        timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
-    ),
+    "reader": None,
 }
+
+
+def _reader():
+    reader = _state.get("reader")
+    if reader is None:
+        reader = DqmReader()
+        _state["reader"] = reader
+    return reader
+
+
+def _clamp_limit(limit: int) -> int:
+    if limit <= 0:
+        raise ValueError("limit must be > 0")
+    return min(limit, MAX_LIMIT)
+
+
+def _page(df, limit: int, offset: int):
+    """Apply an offset to an already-limited frame.
+
+    The reader has no offset concept -- it is a paging idea, and paging is what
+    this server tells callers not to do -- so offset is applied here, over a
+    fetch widened to cover it.
+    """
+    if offset < 0:
+        raise ValueError("offset must be >= 0")
+    if offset:
+        df = df.iloc[offset : offset + limit]
+    elif len(df) > limit:
+        df = df.iloc[:limit]
+    return df
 
 
 @mcp.tool(description="Get DQM MCP configuration and defaults.")
 def get_server_info() -> dict[str, Any]:
-    client = _state["client"]
+    reader = _reader()
     return {
         "name": "dqm",
         "version": _server_version(),
         "read_only": True,
         "transport": "streamable-http",
-        "qe": {
-            "base_url": client.base_url,
-            "dbname": client.dbname,
-            "timeout_seconds": client.timeout_seconds,
+        "backend": {
+            "library": "dqm.reader",
+            "version": getattr(dqm, "__version__", "unknown"),
+            "module": getattr(dqm_reader, "__file__", None),
+            "base_url": reader.base_url,
+            "dbname": reader.dbname,
+            "timeout_seconds": reader.timeout_seconds,
             "nocache_required": True,
         },
         "defaults": {
             "query_limit": DEFAULT_LIMIT,
+            "max_limit": MAX_LIMIT,
             "recent_days": DEFAULT_RECENT_DAYS,
-            "scan_limit": DEFAULT_SCAN_LIMIT,
         },
+        "enums": {"code": CODE_VALUES, "alarmcode": ALARM_VALUES},
     }
 
 
@@ -326,40 +244,16 @@ def list_sources(
     limit: int = DEFAULT_LIMIT,
     offset: int = 0,
 ) -> dict[str, Any]:
-    client = _state["client"]
-    limit = _normalize_limit(limit)
-
-    where: list[str] = []
-    if process:
-        where.append(f"process:eq:{process}")
-    if stream:
-        where.append(f"stream:eq:{stream}")
-    if aggregation:
-        where.append(f"aggregation:eq:{aggregation}")
-    if version:
-        where.append(f"version:eq:{version}")
-
-    rows = client.query_csv(
-        "dqm.sources",
-        columns="sid,process,stream,aggregation,version",
-        where=where or None,
-        order="sid",
-        limit=max(limit + offset, DEFAULT_LIMIT),
+    limit = _clamp_limit(limit)
+    df = _reader().sources(
+        process=process,
+        stream=stream,
+        aggregation=aggregation,
+        version=version,
+        limit=limit + offset,
     )
-
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        out.append(
-            {
-                "sid": _parse_int(row.get("sid")),
-                "process": row.get("process"),
-                "stream": row.get("stream"),
-                "aggregation": row.get("aggregation"),
-                "version": row.get("version"),
-            }
-        )
-
-    paged = _apply_offset(out, limit, offset)
+    truncated = bool(df.attrs.get("truncated"))
+    paged = _page(df, limit, offset)
     return {
         "filters": {
             "process": process,
@@ -370,7 +264,8 @@ def list_sources(
             "offset": offset,
         },
         "returned": len(paged),
-        "results": paged,
+        "truncated": truncated,
+        "results": to_records(paged),
     }
 
 
@@ -388,35 +283,16 @@ def list_versions(
     aggregation: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> dict[str, Any]:
-    client = _state["client"]
-    limit = _normalize_limit(limit)
-
-    where: list[str] = []
-    if process:
-        where.append(f"process:eq:{process}")
-    if stream:
-        where.append(f"stream:eq:{stream}")
-    if aggregation:
-        where.append(f"aggregation:eq:{aggregation}")
-
-    rows = client.query_csv(
-        "dqm.sources",
-        columns="sid,process,stream,aggregation,version",
-        where=where or None,
-        order="sid",
-        limit=max(limit * 3, DEFAULT_LIMIT),
+    limit = _clamp_limit(limit)
+    df = _reader().sources(
+        process=process, stream=stream, aggregation=aggregation, limit=None
     )
-
-    versions = sorted({row.get("version") for row in rows if row.get("version") is not None})
+    versions = sorted({str(v) for v in df["version"].dropna().tolist()})
     return {
-        "filters": {
-            "process": process,
-            "stream": stream,
-            "aggregation": aggregation,
-        },
+        "filters": {"process": process, "stream": stream, "aggregation": aggregation},
         "version_count": len(versions),
         "versions": versions[:limit],
-        "sources_examined": len(rows),
+        "sources_examined": int(len(df)),
     }
 
 
@@ -436,37 +312,12 @@ def list_values(
     limit: int = DEFAULT_LIMIT,
     offset: int = 0,
 ) -> dict[str, Any]:
-    client = _state["client"]
-    limit = _normalize_limit(limit)
-
-    where: list[str] = []
-    if groupx:
-        where.append(f"groupx:eq:{groupx}")
-    if subgroup:
-        where.append(f"subgroup:eq:{subgroup}")
-    if namex:
-        where.append(f"namex:eq:{namex}")
-
-    rows = client.query_csv(
-        "dqm.values",
-        columns="vid,groupx,subgroup,namex",
-        where=where or None,
-        order="vid",
-        limit=max(limit + offset, DEFAULT_LIMIT),
+    limit = _clamp_limit(limit)
+    df = _reader().values(
+        groupx=groupx, subgroup=subgroup, namex=namex, limit=limit + offset
     )
-
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        out.append(
-            {
-                "vid": _parse_int(row.get("vid")),
-                "groupx": row.get("groupx"),
-                "subgroup": row.get("subgroup"),
-                "namex": row.get("namex"),
-            }
-        )
-
-    paged = _apply_offset(out, limit, offset)
+    truncated = bool(df.attrs.get("truncated"))
+    paged = _page(df, limit, offset)
     return {
         "filters": {
             "groupx": groupx,
@@ -476,7 +327,8 @@ def list_values(
             "offset": offset,
         },
         "returned": len(paged),
-        "results": paged,
+        "truncated": truncated,
+        "results": to_records(paged),
     }
 
 
@@ -495,60 +347,24 @@ def list_intervals(
     subrun: int | None = None,
     start_time_after_iso_utc: str | None = None,
     end_time_before_iso_utc: str | None = None,
-    recent_days: int | None = None,
+    recent_days: float | None = None,
     limit: int = DEFAULT_LIMIT,
     offset: int = 0,
     newest_first: bool = True,
 ) -> dict[str, Any]:
-    client = _state["client"]
-    limit = _normalize_limit(limit)
-
-    where: list[str] = []
-    if sid is not None:
-        where.append(f"sid:eq:{sid}")
-    if run is not None:
-        where.append(f"start_run:le:{run}")
-        where.append(f"end_run:ge:{run}")
-    if subrun is not None:
-        where.append(f"start_subrun:le:{subrun}")
-        where.append(f"end_subrun:ge:{subrun}")
-
-    if recent_days is not None:
-        recent_start = datetime.now(timezone.utc) - timedelta(days=recent_days)
-        where.append(f"end_time:ge:{recent_start.strftime('%Y-%m-%dT%H:%M:%S%z')}")
-
-    if start_time_after_iso_utc:
-        dt = _parse_dt_user(start_time_after_iso_utc)
-        where.append(f"end_time:ge:{dt.strftime('%Y-%m-%dT%H:%M:%S%z')}")
-
-    if end_time_before_iso_utc:
-        dt = _parse_dt_user(end_time_before_iso_utc)
-        where.append(f"start_time:le:{dt.strftime('%Y-%m-%dT%H:%M:%S%z')}")
-
-    rows = client.query_csv(
-        "dqm.intervals",
-        columns="iid,sid,start_run,start_subrun,end_run,end_subrun,start_time,end_time",
-        where=where or None,
-        order="-iid" if newest_first else "iid",
-        limit=max(limit + offset, DEFAULT_LIMIT),
+    limit = _clamp_limit(limit)
+    df = _reader().intervals(
+        sid=sid,
+        run=run,
+        subrun=subrun,
+        start_time_after=start_time_after_iso_utc,
+        end_time_before=end_time_before_iso_utc,
+        recent_days=recent_days,
+        limit=limit + offset,
+        newest_first=newest_first,
     )
-
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        out.append(
-            {
-                "iid": _parse_int(row.get("iid")),
-                "sid": _parse_int(row.get("sid")),
-                "start_run": _parse_int(row.get("start_run")),
-                "start_subrun": _parse_int(row.get("start_subrun")),
-                "end_run": _parse_int(row.get("end_run")),
-                "end_subrun": _parse_int(row.get("end_subrun")),
-                "start_time": row.get("start_time"),
-                "end_time": row.get("end_time"),
-            }
-        )
-
-    paged = _apply_offset(out, limit, offset)
+    truncated = bool(df.attrs.get("truncated"))
+    paged = _page(df, limit, offset)
     return {
         "filters": {
             "sid": sid,
@@ -562,30 +378,29 @@ def list_intervals(
             "newest_first": newest_first,
         },
         "returned": len(paged),
-        "results": paged,
+        "truncated": truncated,
+        "results": to_records(paged),
     }
 
 
 @mcp.tool(
     description=(
-        "Query DQM metrics from dqm.numbers (default) or dqm.limits with optional source/value expansion. "
-        "metric_table='limits' has the identical (sid, vid, iid) key shape as 'numbers' -- "
-        "it's the acceptable llimit/ulimit range + alarmcode for the same metric/interval, "
-        "not a separate concept, so the same sid/vid/interval filters apply either way; call "
-        "it twice with the same sid/vid (once per metric_table) to compare a measured "
-        "valuex against its threshold, keeping in mind a numbers row and a limits row for "
-        "the same key are not guaranteed to both exist. "
+        "Query DQM metrics from dqm.numbers (default) or dqm.limits. "
+        "metric_table='limits' has the identical (sid, vid, iid) key shape as 'numbers' "
+        "-- it's the acceptable llimit/ulimit range + alarmcode for the same "
+        "metric/interval, not a separate concept -- so the same filters apply either "
+        "way; call it twice with the same sid/vid to compare a measured valuex against "
+        "its threshold, keeping in mind a numbers row and a limits row for the same key "
+        "are not guaranteed to both exist. "
         "Defaults to recent_days=10 and limit=100. "
-        "Typical call is sid + vid together -- that's a timeline of one named variable "
-        "for one source across intervals (a trend/plot-ready series). sid alone (no vid) "
-        "returns every variable that source tracks interleaved in one list -- rarely "
-        "useful, since results from different variables have unrelated valuex scales and "
-        "meanings; prefer list_values to find the vid you want first. When sid and/or vid "
-        "resolve to exactly one value (explicitly, or via process/stream/... narrowing to "
-        "one source), that filter is pushed down to the query itself; broader/unresolved "
-        "filters fall back to scanning the most recent scan_limit rows and filtering "
-        "client-side, which can be truncated -- always check counts.scan_complete before "
-        "treating matched_rows=0 as a confirmed absence of data."
+        "The typical call is sid + vid together: a timeline of one named variable for "
+        "one source across intervals. sid alone returns every variable that source "
+        "tracks interleaved, on unrelated scales -- use list_values to find the vid first. "
+        "When a result comes back truncated, counts.total_rows is the exact number of "
+        "matching rows: say 'showing N of TOTAL'. Do not page through a large result -- "
+        "pass summarize=true for count/mean/min/max/range and code tallies, or "
+        "downsample_to=N for a timeline reduced to about N points (each carrying the "
+        "bin's mean, min and max, so excursions survive the reduction)."
     )
 )
 def query_metrics(
@@ -603,286 +418,301 @@ def query_metrics(
     subrun: int | None = None,
     start_time_after_iso_utc: str | None = None,
     end_time_before_iso_utc: str | None = None,
-    recent_days: int = DEFAULT_RECENT_DAYS,
-    sort_by: str = "end_time",
-    sort_order: str = "desc",
+    recent_days: float | None = DEFAULT_RECENT_DAYS,
     limit: int = DEFAULT_LIMIT,
     offset: int = 0,
     expand_ids: bool = True,
-    scan_limit: int = DEFAULT_SCAN_LIMIT,
+    summarize: bool = False,
+    downsample_to: int = 0,
 ) -> dict[str, Any]:
-    client = _state["client"]
-    metric_table = metric_table.strip().lower()
-    if metric_table not in {"numbers", "limits"}:
-        raise ValueError("metric_table must be 'numbers' or 'limits'")
-    if sort_order not in {"asc", "desc"}:
-        raise ValueError("sort_order must be 'asc' or 'desc'")
+    reader = _reader()
+    limit = _clamp_limit(limit)
 
-    allowed_sort = {
-        "numbers": {"nid", "valuex", "sigma", "code", "start_run", "end_run", "start_subrun", "end_subrun", "start_time", "end_time"},
-        "limits": {"lid", "llimit", "ulimit", "sigma", "alarmcode", "start_run", "end_run", "start_subrun", "end_subrun", "start_time", "end_time"},
-    }
-    if sort_by not in allowed_sort[metric_table]:
-        raise ValueError(f"sort_by is not valid for {metric_table}")
-
-    limit = _normalize_limit(limit)
-    if offset < 0:
-        raise ValueError("offset must be >= 0")
-    if scan_limit <= 0:
-        raise ValueError("scan_limit must be > 0")
-
-    source_where: list[str] = []
-    if sid is not None:
-        source_where.append(f"sid:eq:{sid}")
-    if process:
-        source_where.append(f"process:eq:{process}")
-    if stream:
-        source_where.append(f"stream:eq:{stream}")
-    if aggregation:
-        source_where.append(f"aggregation:eq:{aggregation}")
-    if version:
-        source_where.append(f"version:eq:{version}")
-
-    source_rows = client.query_csv(
-        "dqm.sources",
-        columns="sid,process,stream,aggregation,version",
-        where=source_where or None,
-        order="sid",
-        limit=scan_limit,
-    )
-    allowed_sids = {_parse_int(r.get("sid")) for r in source_rows}
-    allowed_sids.discard(None)
-
-    # A single resolved sid/vid -- given explicitly, or narrowed to exactly one
-    # via process/stream/aggregation/version (resp. groupx/subgroup/namex) --
-    # gets pushed down as a real where= clause on dqm.intervals/dqm.numbers/
-    # dqm.limits below, instead of only being applied as a client-side filter
-    # after an unscoped top-scan_limit-by-pk fetch. Without this, a source
-    # with a low insertion rate relative to others sharing the same table
-    # (e.g. one daily valNightly source alongside ~90 higher-volume CRV
-    # sources) can have its rows fall outside any bounded scan window no
-    # matter how large scan_limit is set -- raising scan_limit doesn't help
-    # because the required window depends on everyone else's insertion rate,
-    # not this query's own selectivity. When sid/vid can't be resolved to a
-    # single value (e.g. an aggregation filter matching several sources),
-    # this falls back to the previous unscoped-scan-plus-client-filter
-    # behavior -- see the scan_complete flag below for that case.
-    resolved_sid = sid if sid is not None else (next(iter(allowed_sids)) if len(allowed_sids) == 1 else None)
-
-    value_where: list[str] = []
-    if vid is not None:
-        value_where.append(f"vid:eq:{vid}")
-    if groupx:
-        value_where.append(f"groupx:eq:{groupx}")
-    if subgroup:
-        value_where.append(f"subgroup:eq:{subgroup}")
-    if namex:
-        value_where.append(f"namex:eq:{namex}")
-
-    value_rows = client.query_csv(
-        "dqm.values",
-        columns="vid,groupx,subgroup,namex",
-        where=value_where or None,
-        order="vid",
-        limit=scan_limit,
-    )
-    allowed_vids = {_parse_int(r.get("vid")) for r in value_rows}
-    allowed_vids.discard(None)
-
-    resolved_vid = vid if vid is not None else (next(iter(allowed_vids)) if len(allowed_vids) == 1 else None)
-
-    interval_where: list[str] = []
-    if resolved_sid is not None:
-        interval_where.append(f"sid:eq:{resolved_sid}")
-    if run is not None:
-        interval_where.append(f"start_run:le:{run}")
-        interval_where.append(f"end_run:ge:{run}")
-    if subrun is not None:
-        interval_where.append(f"start_subrun:le:{subrun}")
-        interval_where.append(f"end_subrun:ge:{subrun}")
-
-    if recent_days is not None:
-        recent_start = datetime.now(timezone.utc) - timedelta(days=recent_days)
-        interval_where.append(f"end_time:ge:{recent_start.strftime('%Y-%m-%dT%H:%M:%S%z')}")
-
-    if start_time_after_iso_utc:
-        dt = _parse_dt_user(start_time_after_iso_utc)
-        interval_where.append(f"end_time:ge:{dt.strftime('%Y-%m-%dT%H:%M:%S%z')}")
-
-    if end_time_before_iso_utc:
-        dt = _parse_dt_user(end_time_before_iso_utc)
-        interval_where.append(f"start_time:le:{dt.strftime('%Y-%m-%dT%H:%M:%S%z')}")
-
-    interval_rows = client.query_csv(
-        "dqm.intervals",
-        columns="iid,sid,start_run,start_subrun,end_run,end_subrun,start_time,end_time",
-        where=interval_where or None,
-        order="-iid",
-        limit=scan_limit,
+    filters = dict(
+        sid=sid,
+        vid=vid,
+        process=process,
+        stream=stream,
+        aggregation=aggregation,
+        version=version,
+        groupx=groupx,
+        subgroup=subgroup,
+        namex=namex,
+        run=run,
+        subrun=subrun,
+        start_time_after=start_time_after_iso_utc,
+        end_time_before=end_time_before_iso_utc,
+        recent_days=recent_days,
     )
 
-    allowed_iids = {_parse_int(r.get("iid")) for r in interval_rows}
-    allowed_iids.discard(None)
+    # summarize and downsample_to describe the whole matching set, so they read
+    # past the display limit -- reducing only the first 100 rows would answer a
+    # different question than the one asked.
+    reducing = summarize or downsample_to > 0
+    fetch_limit = None if reducing else limit + offset
 
-    metric_cols = "nid,sid,iid,vid,valuex,sigma,code" if metric_table == "numbers" else "lid,sid,iid,vid,llimit,ulimit,sigma,alarmcode"
-    metric_pk = "nid" if metric_table == "numbers" else "lid"
-
-    metric_where: list[str] = []
-    if resolved_sid is not None:
-        metric_where.append(f"sid:eq:{resolved_sid}")
-    if resolved_vid is not None:
-        metric_where.append(f"vid:eq:{resolved_vid}")
-
-    metric_rows = client.query_csv(
-        f"dqm.{metric_table}",
-        columns=metric_cols,
-        where=metric_where or None,
-        order=f"-{metric_pk}",
-        limit=scan_limit,
+    df = reader.metrics(
+        table=metric_table,
+        limit=fetch_limit,
+        decorate=expand_ids,
+        **filters,
     )
 
-    interval_map: dict[int, dict[str, Any]] = {}
-    for row in interval_rows:
-        iid_val = _parse_int(row.get("iid"))
-        if iid_val is None:
-            continue
-        interval_map[iid_val] = {
-            "iid": iid_val,
-            "sid": _parse_int(row.get("sid")),
-            "start_run": _parse_int(row.get("start_run")),
-            "start_subrun": _parse_int(row.get("start_subrun")),
-            "end_run": _parse_int(row.get("end_run")),
-            "end_subrun": _parse_int(row.get("end_subrun")),
-            "start_time": row.get("start_time"),
-            "end_time": row.get("end_time"),
-        }
+    truncated = bool(df.attrs.get("truncated"))
+    matched = int(len(df))
 
-    source_map = {sidv: item for sidv, item in _sources_by_id(client, {s for s in allowed_sids if s is not None}).items()}
-    value_map = {vidv: item for vidv, item in _values_by_id(client, {v for v in allowed_vids if v is not None}).items()}
-
-    results: list[dict[str, Any]] = []
-    for row in metric_rows:
-        sid_val = _parse_int(row.get("sid"))
-        vid_val = _parse_int(row.get("vid"))
-        iid_val = _parse_int(row.get("iid"))
-
-        if sid_val is None or vid_val is None or iid_val is None:
-            continue
-        if sid_val not in allowed_sids:
-            continue
-        if vid_val not in allowed_vids:
-            continue
-        if iid_val not in allowed_iids:
-            continue
-
-        interval = interval_map.get(iid_val)
-        if interval is None:
-            interval = _intervals_by_id(client, {iid_val}).get(iid_val)
-            if interval is not None:
-                interval_map[iid_val] = interval
-
-        entry: dict[str, Any] = {
-            "sid": sid_val,
-            "vid": vid_val,
-            "iid": iid_val,
-        }
-
-        if metric_table == "numbers":
-            entry["nid"] = _parse_int(row.get("nid"))
-            entry["valuex"] = _parse_float(row.get("valuex"))
-            entry["sigma"] = _parse_float(row.get("sigma"))
-            entry["code"] = _parse_int(row.get("code"))
-        else:
-            entry["lid"] = _parse_int(row.get("lid"))
-            entry["llimit"] = _parse_float(row.get("llimit"))
-            entry["ulimit"] = _parse_float(row.get("ulimit"))
-            entry["sigma"] = _parse_float(row.get("sigma"))
-            entry["alarmcode"] = _parse_int(row.get("alarmcode"))
-
-        if interval is not None:
-            entry["interval"] = interval
-        if expand_ids:
-            if sid_val in source_map:
-                entry["source"] = source_map[sid_val]
-            if vid_val in value_map:
-                entry["value"] = value_map[vid_val]
-
-        results.append(entry)
-
-    reverse = sort_order == "desc"
-
-    def sort_key(item: dict[str, Any]) -> Any:
-        if sort_by in item:
-            return item.get(sort_by)
-        interval = item.get("interval", {})
-        v = interval.get(sort_by)
-        if sort_by in {"start_time", "end_time"}:
-            return _parse_dt(v) or datetime.fromtimestamp(0, tz=timezone.utc)
-        return v
-
-    results.sort(key=sort_key, reverse=reverse)
-    paged = _apply_offset(results, limit, offset)
-
-    # scan_complete is the structural signal: matched_rows == 0 alone is
-    # ambiguous between "confirmed no data" and "scan stopped before finding
-    # any" -- a caller (human or agent) must check this flag before reporting
-    # an empty result as authoritative. True whenever the metric_rows fetch
-    # was not truncated, i.e. every row satisfying metric_where was examined.
-    scan_complete = len(metric_rows) < scan_limit
-
-    warnings: list[str] = []
-    if not scan_complete and not results:
-        warnings.append(
-            f"INCOMPLETE SCAN, ZERO MATCHES: scan_limit was reached scanning dqm.{metric_table} "
-            "before finding any matching rows. This does NOT confirm no data exists for these "
-            "filters -- it means the scan stopped before reaching any that might match. Do not "
-            "report this as 'no data'; see scan_complete=false in counts. Pass an explicit sid "
-            "and/or vid (or narrow process/stream/aggregation/version to resolve to one source) "
-            "so the filter can be pushed down to the query itself, or raise scan_limit."
-        )
-    elif not scan_complete:
-        warnings.append(
-            "scan_limit reached; more matching rows may exist beyond the scanned window "
-            "(see scan_complete=false in counts). Narrow the query or raise scan_limit for "
-            "a complete result."
-        )
-
-    return {
+    response: dict[str, Any] = {
         "metric_table": metric_table,
         "filters": {
-            "sid": sid,
-            "vid": vid,
-            "process": process,
-            "stream": stream,
-            "aggregation": aggregation,
-            "version": version,
-            "groupx": groupx,
-            "subgroup": subgroup,
-            "namex": namex,
-            "run": run,
-            "subrun": subrun,
-            "start_time_after_iso_utc": start_time_after_iso_utc,
-            "end_time_before_iso_utc": end_time_before_iso_utc,
-            "recent_days": recent_days,
-            "sort_by": sort_by,
-            "sort_order": sort_order,
+            **{k: v for k, v in filters.items()},
             "limit": limit,
             "offset": offset,
             "expand_ids": expand_ids,
-            "scan_limit": scan_limit,
+            "summarize": summarize,
+            "downsample_to": downsample_to,
         },
-        "counts": {
-            "candidate_sources": len(allowed_sids),
-            "candidate_values": len(allowed_vids),
-            "candidate_intervals": len(allowed_iids),
-            "scanned_metric_rows": len(metric_rows),
-            "matched_rows": len(results),
-            "returned_rows": len(paged),
-            "scan_complete": scan_complete,
-        },
-        "warnings": warnings,
-        "results": paged,
     }
+
+    if summarize:
+        response["summary"] = reader.summarize(df)
+        response["counts"] = {"matched_rows": matched, "truncated": truncated}
+        return response
+
+    if downsample_to > 0:
+        reduced = reader.downsample(df, n=downsample_to)
+        response["counts"] = {
+            "matched_rows": matched,
+            "returned_rows": int(len(reduced)),
+            "truncated": truncated,
+            "downsampled": matched > len(reduced),
+        }
+        response["results"] = to_records(reduced)
+        return response
+
+    paged = _page(df, limit, offset)
+    counts: dict[str, Any] = {
+        "returned_rows": int(len(paged)),
+        "truncated": truncated,
+    }
+    if truncated:
+        # Only worth the extra scan when the answer would otherwise be
+        # unquantified: an exact total is what lets the caller say "100 of
+        # 41,203" instead of "100, and an unknown number more".
+        try:
+            counts["total_rows"] = reader.count_metrics(table=metric_table, **filters)
+        except Exception as exc:  # pragma: no cover - counting is best effort
+            LOGGER.warning("count_metrics failed: %s", exc)
+            counts["total_rows"] = None
+    else:
+        counts["total_rows"] = matched
+
+    response["counts"] = counts
+    response["results"] = to_records(paged)
+
+    if truncated:
+        response["warnings"] = [
+            f"Result capped at limit={limit}. counts.total_rows is the exact number of "
+            "matching rows -- report 'showing N of that total', not as a complete "
+            "result. Rather than paging, use summarize=true or downsample_to=N."
+        ]
+    return response
+
+
+@mcp.tool(
+    description=(
+        "List alarm episodes from dqm.alarms. An episode is identified by "
+        "(algo, config, subject, sid) -- which evaluator, under which "
+        "configuration, found what, on which source -- and NOT by interval: a "
+        "condition seen again extends the same episode rather than opening a "
+        "new one, so one row can span many runs and many days. `level` is the "
+        "severity, escalating as the maximum over the episode's causes. "
+        "The run and time spans are a hull of what fired and do NOT claim that "
+        "every run inside them alarmed -- get_alarm_causes is the ground truth "
+        "for what was actually seen. "
+        "Two independent lifecycles live here and must not be conflated: "
+        "`open` is whether the condition is still being reported, maintained by "
+        "the evaluators; `status` is what a human decided about it (active, "
+        "acknowledged, silenced, retired, deleted). An episode can be "
+        "status='active' for a week because nobody looked at it, and an "
+        "acknowledged problem that is still happening stays open. Setting a "
+        "terminal status (retired, deleted) also closes an episode, but closing "
+        "one does not change its status. "
+        "So: open=true answers 'what is happening now', status answers 'what has "
+        "anyone done about it'. Filter on open for a live display, on status for "
+        "a review of decisions. "
+        "The source each episode concerns is decoded from its sid into a "
+        "process/stream/aggregation/version string, since a bare sid is not "
+        "readable; use list_sources to go the other way."
+    )
+)
+def list_alarms(
+    sid: int | None = None,
+    algo: str | None = None,
+    config: str | None = None,
+    subject: str | None = None,
+    status: str | None = None,
+    open_only: bool | None = None,
+    min_level: int | None = None,
+    recent_days: float | None = None,
+    limit: int = DEFAULT_LIMIT,
+    offset: int = 0,
+    newest_first: bool = True,
+) -> dict[str, Any]:
+    limit = _clamp_limit(limit)
+    from dqm import schema
+
+    if status is not None and not schema.valid_alarm_status(status):
+        raise ValueError(
+            f"status must be one of {sorted(schema.ALARM_STATUSES)}, got {status!r}"
+        )
+    if min_level is not None and min_level not in range(4):
+        raise ValueError(f"min_level must be 0-3, got {min_level}")
+
+    from dqm.reader.transport import where_eq
+
+    clauses = []
+    if sid is not None:
+        clauses.append(where_eq("sid", int(sid)))
+    if algo is not None:
+        clauses.append(where_eq("algo", algo))
+    if config is not None:
+        clauses.append(where_eq("config", config))
+    if subject is not None:
+        clauses.append(where_eq("subject", subject))
+    if status is not None:
+        clauses.append(where_eq("status", status))
+
+    df = _reader().read_table("alarms", clauses=clauses or None, limit=None)
+
+    # Filtered here rather than pushed down: these are small tables -- tens of
+    # rows -- and a boolean or an inequality is not worth another clause form.
+    if open_only is not None and "open" in df.columns:
+        df = df[df["open"].fillna(False) == bool(open_only)]
+    if min_level is not None and "level" in df.columns:
+        df = df[df["level"].fillna(0) >= min_level]
+    if recent_days is not None and "mtime" in df.columns:
+        from dqm.timeutil import cutoff
+
+        df = df[df["mtime"] >= cutoff(recent_days)]
+
+    if "mtime" in df.columns:
+        df = df.sort_values("mtime", ascending=not newest_first)
+
+    total = len(df)
+
+    # An sid alone tells a reader nothing; decode it.
+    try:
+        sids = [int(x) for x in df["sid"].dropna().unique()]
+        if sids:
+            src = _reader().sources(sid=sids, limit=None)
+            src["source"] = (src["process"].astype(str) + "/"
+                             + src["stream"].astype(str) + "/"
+                             + src["aggregation"].astype(str) + "/"
+                             + src["version"].astype(str))
+            df = df.merge(src[["sid", "source"]], on="sid", how="left")
+    except Exception:  # pragma: no cover - decoration is a convenience
+        LOGGER.debug("could not decode sids", exc_info=True)
+
+    paged = _page(df, limit, offset)
+    return {
+        "filters": {
+            "sid": sid, "algo": algo, "config": config, "subject": subject,
+            "status": status, "open_only": open_only, "min_level": min_level,
+            "recent_days": recent_days, "limit": limit, "offset": offset,
+            "newest_first": newest_first,
+        },
+        "counts": {"total_rows": total},
+        "returned": len(paged),
+        "truncated": total > len(paged) + offset,
+        # level is the episode severity (message/warn/alarm/severe), which is
+        # NOT the alarmcode on a dqm.limits row (ignore/warnOnly/standard/
+        # critical).  Both are 0-3; conflating them would mislabel every row.
+        "enums": {"level": schema.ALARM_LEVELS,
+                  "status": sorted(schema.ALARM_STATUSES)},
+        "results": to_records(paged),
+    }
+
+
+@mcp.tool(
+    description=(
+        "The evidence for one alarm episode, from dqm.alarm_causes. Each cause "
+        "names the interval it was seen in (iid) and the metric it concerns "
+        "(vid), with the level the algorithm assigned. A NULL vid is a global "
+        "test -- one about the interval as a whole rather than a single metric. "
+        "This is the ground truth for an episode: dqm.alarms carries a run/time "
+        "hull that does not claim every run inside it fired, whereas these rows "
+        "are exactly what was seen. A cause keeps the level it was first "
+        "reported with, while the episode's level escalates above it. "
+        "Each cause is decoded into its metric name and its interval's run and "
+        "time range, so the answer does not consist of bare ids. Call "
+        "list_alarms first to find the aid."
+    )
+)
+def get_alarm_causes(
+    aid: int,
+    limit: int = DEFAULT_LIMIT,
+    offset: int = 0,
+) -> dict[str, Any]:
+    limit = _clamp_limit(limit)
+    from dqm.reader.transport import where_eq
+
+    r = _reader()
+    df = r.read_table("alarm_causes",
+                      clauses=[where_eq("aid", int(aid))], limit=None)
+    total = len(df)
+    if total == 0:
+        return {
+            "aid": aid,
+            "counts": {"total_rows": 0},
+            "returned": 0,
+            "truncated": False,
+            "results": [],
+            "note": ("no causes recorded for this aid -- either the episode does "
+                     "not exist or it was written without evidence"),
+        }
+
+    # Decode the two foreign keys, which is the whole value of this tool: an
+    # iid and a vid say nothing on their own.
+    try:
+        vids = [int(x) for x in df["vid"].dropna().unique()]
+        if vids:
+            vv = r.values(vid=vids, limit=None)
+            vv["metric"] = (vv["groupx"].astype(str) + "/"
+                            + vv["subgroup"].astype(str) + "/"
+                            + vv["namex"].astype(str))
+            df = df.merge(vv[["vid", "metric"]], on="vid", how="left")
+    except Exception:  # pragma: no cover
+        LOGGER.debug("could not decode vids", exc_info=True)
+    try:
+        iids = [int(x) for x in df["iid"].dropna().unique()]
+        if iids:
+            iv = r.intervals(iid=iids, limit=None)
+            keep = [c for c in ("iid", "start_run", "start_subrun", "end_run",
+                                "end_subrun", "start_time", "end_time")
+                    if c in iv.columns]
+            df = df.merge(iv[keep], on="iid", how="left")
+    except Exception:  # pragma: no cover
+        LOGGER.debug("could not decode iids", exc_info=True)
+
+    from dqm import schema
+
+    paged = _page(df, limit, offset)
+    return {
+        "aid": aid,
+        "counts": {"total_rows": total},
+        "returned": len(paged),
+        "truncated": total > len(paged) + offset,
+        "enums": {"level": schema.ALARM_LEVELS},
+        "results": to_records(paged),
+    }
+
+
+def _configure_logging() -> None:
+    logging.basicConfig(
+        level=os.environ.get("DQM_MCP_LOG_LEVEL", "INFO"),
+        stream=sys.stderr,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -900,18 +730,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--qe-base-url",
-        default=os.environ.get("DQM_QE_BASE_URL", DEFAULT_QE_NOCACHE_URL),
+        default=os.environ.get("DQM_QE_BASE_URL", dqm_reader.DEFAULT_QE_NOCACHE_URL),
         help="Query Engine base URL -- must be the nocache endpoint (default: %(default)s)",
     )
     parser.add_argument(
         "--qe-dbname",
-        default=os.environ.get("DQM_QE_DBNAME", DEFAULT_DBNAME),
+        default=os.environ.get("DQM_QE_DBNAME", dqm_reader.DEFAULT_DBNAME),
         help="Query Engine dbname (default: %(default)s)",
     )
     parser.add_argument(
         "--qe-timeout-seconds",
         type=int,
-        default=int(os.environ.get("DQM_QE_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT_SECONDS))),
+        default=int(
+            os.environ.get("DQM_QE_TIMEOUT_SECONDS", str(dqm_reader.DEFAULT_TIMEOUT_SECONDS))
+        ),
         help="Query Engine HTTP timeout in seconds (default: %(default)s)",
     )
     parser.add_argument(
@@ -928,12 +760,17 @@ def main(argv: list[str] | None = None) -> None:
 
     _state["host"] = args.host
     _state["port"] = args.port
-    _state["client"] = _build_qe_client(args.qe_base_url, args.qe_dbname, args.qe_timeout_seconds)
+    _state["reader"] = DqmReader(
+        base_url=args.qe_base_url,
+        dbname=args.qe_dbname,
+        timeout_seconds=args.qe_timeout_seconds,
+    )
 
     if args.check:
         print(
             f"OK: dqm_mcp constructed "
-            f"(host={args.host} port={args.port} qe_base_url={args.qe_base_url} qe_dbname={args.qe_dbname})"
+            f"(host={args.host} port={args.port} qe_base_url={args.qe_base_url} "
+            f"qe_dbname={args.qe_dbname} mu2e-dqm={getattr(dqm, '__version__', '?')})"
         )
         return
 

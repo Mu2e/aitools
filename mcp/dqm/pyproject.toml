@@ -13,9 +13,20 @@ dynamic = ["version"]
 description = "Read-only streamable-HTTP MCP server for Mu2e DQM Query Engine access"
 readme = "README.md"
 requires-python = ">=3.10"
+# dqm.reader holds every database query this server makes; it ships in the
+# mu2e-dqm distribution in the Mu2e/DQM repository, which is not on PyPI, so
+# it is pinned here as a direct git reference -- the same "pin a ref per
+# release" arrangement install.sh applies to this package. pandas and requests
+# arrive through it and are not repeated here, because nothing in dqm_mcp
+# imports them directly. The [web] extra is deliberately not requested: this
+# server has no use for dash/plotly.
+#
+# Pinned to a DQM tag, so a rebuild months from now installs the same reader
+# this server was tested against. Tracking `main` meant whatever happened to
+# be there at venv-build time. Bump it deliberately when adopting a release.
 dependencies = [
   "mcp>=2.0.0",
-  "requests>=2.31.0"
+  "mu2e-dqm @ git+https://github.com/Mu2e/DQM@v2.0.0#subdirectory=python"
 ]
 
 [project.scripts]
