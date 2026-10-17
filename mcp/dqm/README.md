@@ -37,7 +37,7 @@ it comes in as a pinned git dependency — nothing extra to do:
 ```toml
 dependencies = [
   "mcp>=2.0.0",
-  "mu2e-dqm @ git+https://github.com/Mu2e/DQM@main#subdirectory=python"
+  "mu2e-dqm @ git+https://github.com/Mu2e/DQM@v2.1.0#subdirectory=python"
 ]
 ```
 
@@ -49,10 +49,14 @@ prints the resolved `mu2e-dqm` version, and `get_server_info()` reports the
 version and module path at runtime, so which reader a deployment is actually
 running is never a guess.
 
-> **Pin a tag.** The dependency currently tracks `main`, because `mu2e-dqm` is
-> unreleased as of DQM `v1.4.0`. Once a DQM release contains it, change `@main`
-> to that tag — tracking a branch means a rebuild can silently pick up reader
-> changes never tested against this server.
+> **The pin is a floor, not a preference.** `v2.1.0` is the first DQM release
+> carrying `dqm.schema.ALARM_LEVELS`, which `list_alarms` and
+> `get_alarm_causes` read. Against `v2.0.0` those two tools raise
+> `AttributeError` when called while every other tool keeps working — a
+> failure that looks like a bug in the tools rather than a version mismatch,
+> so it is worth knowing before chasing it. Bump the pin deliberately when
+> adopting a newer reader; tracking a branch instead would let a rebuild
+> silently pick up reader changes never tested against this server.
 
 To deploy against a different reader revision without editing the pin — trying
 a reader branch before tagging it — `install.sh` takes `--dqm-ref`:
