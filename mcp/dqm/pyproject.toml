@@ -24,9 +24,16 @@ requires-python = ">=3.10"
 # Pinned to a DQM tag, so a rebuild months from now installs the same reader
 # this server was tested against. Tracking `main` meant whatever happened to
 # be there at venv-build time. Bump it deliberately when adopting a release.
+#
+# v2.1.0 is the floor for the alarm tools, not a preference: list_alarms and
+# get_alarm_causes read dqm.schema.ALARM_LEVELS (the episode severity
+# vocabulary, which is NOT the limits alarmcode), and that was added after
+# v2.0.0. Against v2.0.0 both tools raise AttributeError at call time while
+# every other tool keeps working -- so the failure looks like a bug in the
+# tools rather than a version mismatch.
 dependencies = [
   "mcp>=2.0.0",
-  "mu2e-dqm @ git+https://github.com/Mu2e/DQM@v2.0.0#subdirectory=python"
+  "mu2e-dqm @ git+https://github.com/Mu2e/DQM@v2.1.0#subdirectory=python"
 ]
 
 [project.scripts]
