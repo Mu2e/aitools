@@ -208,6 +208,12 @@ if ! _has_backend; then
       ;;
   esac
   unset _choice
+  # env.sh loaded .env before it existed; load the new backend settings now
+  # so `claude` works in this shell right away (when sourced).
+  if [[ -f "$env_file" ]]; then
+    # shellcheck source=/dev/null
+    source "$env_file"
+  fi
 fi
 unset -f _has_backend
 
