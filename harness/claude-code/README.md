@@ -16,13 +16,15 @@ cd ~/aitools/harness/claude-code
 
 `setup.sh` will:
 
-1. Check for Claude Code (`npm install -g @anthropic-ai/claude-code` if missing)
-2. Redirect `$HOME` for claude to `/exp/mu2e/app/users/$USER/claude-code/home/`
+1. Redirect `$HOME` for claude to `/exp/mu2e/app/users/$USER/claude-code/home/`
    (keeps `~/.claude.json` and `~/.claude/` off the quota-constrained `/nashome`)
+2. Install the native Claude Code build there if missing (Anthropic's
+   `install.sh`; self-contained, **no Node.js needed**, ~320 MB, auto-updates).
+   Pin a version with `. setup.sh 2.1.318` (or `stable`).
 3. Prompt for an API backend if none is configured:
-   - **litellm.fnal.gov** (recommended — shared Fermilab endpoint, MIKEY token)
+   - **litellm.fnal.gov** (recommended — shared Fermilab endpoint, personal key from https://litellm.fnal.gov)
    - **Personal Anthropic API key** (`console.anthropic.com`)
-4. Seed `~/.claude/settings.json` (hooks: guardrails, session logging)
+4. Seed `~/.claude/settings.json` (default model `sonnet`; hooks: guardrails, session logging)
 5. Symlink `../shared/mu2e.md` → `$CLAUDE_HOME/CLAUDE.md` (auto-discovered context)
 6. Sync MCP servers from the internal registry
 
@@ -48,9 +50,8 @@ claude          # or: mu2eai-claude
 To switch to or update the LiteLLM backend later:
 
 ```bash
-./setup-litellm.sh                 # re-prompts for key if needed, auto-detects model
+./setup-litellm.sh                 # re-prompts for key if needed, maps model aliases
 ./setup-litellm.sh --list-models   # see what's available
-./setup-litellm.sh --model claude-opus-4-5
 ```
 
 To use a claude.ai subscription instead, skip the key prompt during setup (option 3)
@@ -88,7 +89,7 @@ Configured in `$CLAUDE_HOME/.claude/settings.json` (seeded from
 | Hook | Trigger | Effect |
 |------|---------|--------|
 | `block-commands.sh` | PreToolUse (Bash) | Blocks `ssh`, `scp`, `sftp`, `rsync`, `kinit`, `sudo`, `su` |
-| `log-session.sh` | UserPromptSubmit + Stop | Usage logging stub (active once `log-session-claude.py` is written) |
+| `log-session.sh` | UserPromptSubmit + Stop | Session usage log (see below) |
 
 Blocking is a heuristic guard rail, not a hard sandbox. The `permissions.deny`
 rules in `settings.json` add a second layer (Claude Code's own permission
@@ -96,11 +97,15 @@ system), but the agent still runs with your full Unix permissions.
 
 ## Session usage logging
 
-Logging is stubbed in `hooks/log-session.sh` pending a `log-session-claude.py`
-implementation. Claude Code stores session transcripts as JSONL files under
-`$CLAUDE_HOME/.claude/projects/<dir-hash>/<session-id>.jsonl`. Token counts
-and tool use are in each message's `usage` field. The full implementation will
-mirror what `../goose/log-session.py` does for goose.
+`hooks/log-session.sh` runs `log-session-claude.py` after every prompt and
+reply. It reads the session transcript
+(`$CLAUDE_HOME/.claude/projects/<dir>/<session-id>.jsonl`) and upserts one
+line per session into `/exp/mu2e/app/users/$USER/claude-code/log/usage.jsonl`.
+
+Records have the columns of the shared table `usage.sessions`
+(`../usage/sessions.sql`), the same shape the Slack bot and the goose harness
+write (shared code: `../usage/usage_record.py`): counts, timings, model and
+tool names only -- no user, working directory or content.
 
 ## Files
 
@@ -113,5 +118,16 @@ mirror what `../goose/log-session.py` does for goose.
 | `sync_mcp_claude.py` | Python worker for sync-mcp.sh |
 | `settings.json.example` | Tracked settings template (live settings outside this repo) |
 | `hooks/block-commands.sh` | PreToolUse guardrail |
-| `hooks/log-session.sh` | Usage logging hook stub |
+| `hooks/log-session.sh` | Usage logging hook (runs `log-session-claude.py`) |
 | `../shared/mu2e.md` | Shared experiment context (CLAUDE.md + goose TOM) |
+| `../shared/mikey-token.sh` | MIKEY token lookup for MCP sync (env → personal file → `getMu2eKey`) |
+| `../shared/getMu2eKey` | Vendored copy of the CVMFS `getMu2eKey` (fallback when CVMFS is absent) |
+
+## Testing a fresh install
+
+To try `setup.sh` from scratch without touching your real setup, point the
+harness at an empty directory:
+
+```bash
+CLAUDE_HARNESS_ROOT=/tmp/claude-test . setup.sh
+```

@@ -9,7 +9,11 @@
 
 env_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-claude_root="/exp/mu2e/app/users/$USER/claude-code"
+# CLAUDE_HARNESS_ROOT overrides the default location -- mainly for testing
+# a fresh install without touching your real config, e.g.:
+#   CLAUDE_HARNESS_ROOT=/tmp/claude-test . setup.sh
+claude_root="${CLAUDE_HARNESS_ROOT:-/exp/mu2e/app/users/$USER/claude-code}"
+export CLAUDE_ROOT="$claude_root"
 
 export CLAUDE_BIN_DIR="$claude_root/bin"
 export CLAUDE_HOME="$claude_root/home"
@@ -70,17 +74,6 @@ claude() {
 # Convenience alias (same pattern as mu2eai for goose).
 mu2eai-claude() {
   claude "$@"
-}
-
-# Model picker (analogous to goose-model / mu2eai-model for goose).
-# Runs claude-model.sh which queries litellm.fnal.gov live and writes the
-# chosen model to CLAUDE_HOME/.env so the next `claude` invocation uses it.
-claude-model() {
-  "$CLAUDE_HARNESS_DIR/claude-model.sh" "$@"
-}
-
-mu2eai-claude-model() {
-  claude-model "$@"
 }
 
 # Export the harness directory so the shell functions above can find their
