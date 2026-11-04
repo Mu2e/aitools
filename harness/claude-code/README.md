@@ -29,7 +29,8 @@ hidden). `setup.sh` is safe to re-run; it only does what's missing:
    auto-updates). Pin a version with `. setup.sh 2.1.318` (or `stable`).
 2. Seeds `settings.json` from `settings.json.example`: default model
    Sonnet, guard-rail and logging hooks, deny rules.
-3. Links the Mu2e context `../shared/mu2e.md` as `CLAUDE.md`.
+3. Links the Mu2e context `../shared/mu2e.md` as `~/.claude/CLAUDE.md`
+   (loaded in every session).
 4. Asks for a backend if none is configured (see [Backends](#backends)).
 5. Connects the Mu2e MCP servers from the registry on mu2eaigpvm01.
 

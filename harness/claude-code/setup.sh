@@ -121,18 +121,23 @@ if [[ ! -f "$settings_file" && -f "$settings_example" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Symlink CLAUDE.md (shared context) into CLAUDE_HOME
-#    Claude Code auto-discovers CLAUDE.md files in the working directory tree
-#    and at $HOME/CLAUDE.md. We put it at $HOME so it applies everywhere.
+# 4. Symlink CLAUDE.md (shared context) into CLAUDE_HOME/.claude
+#    ~/.claude/CLAUDE.md is Claude Code's user-level memory, loaded in every
+#    session wherever you work. (~/CLAUDE.md, where earlier versions put it,
+#    is only read for sessions started inside $HOME, i.e. practically never.)
 # ---------------------------------------------------------------------------
 
-claude_md_target="$CLAUDE_HOME/CLAUDE.md"
+claude_md_target="$CLAUDE_HOME/.claude/CLAUDE.md"
 claude_md_source="$(cd "$script_dir/../shared" && pwd)/mu2e.md"
 
 if [[ -f "$claude_md_source" ]]; then
   if [[ ! -e "$claude_md_target" ]] || [[ "$(readlink "$claude_md_target" 2>/dev/null)" != "$claude_md_source" ]]; then
     ln -sfn "$claude_md_source" "$claude_md_target"
     echo "Linked CLAUDE.md → $claude_md_source"
+  fi
+  # Drop the old, ineffective link from earlier versions.
+  if [[ "$(readlink "$CLAUDE_HOME/CLAUDE.md" 2>/dev/null)" == "$claude_md_source" ]]; then
+    rm -f "$CLAUDE_HOME/CLAUDE.md"
   fi
 else
   echo "Warning: shared/mu2e.md not found at $claude_md_source -- CLAUDE.md not linked" >&2
