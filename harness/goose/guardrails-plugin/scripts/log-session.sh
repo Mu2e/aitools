@@ -34,7 +34,7 @@ if [[ -z "$session_id" ]]; then
   exit 0
 fi
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+script_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"  # -P: through the plugin symlink
 harness_root="$(cd "$script_dir/../.." && pwd)"
 log_script="$harness_root/log-session.py"
 

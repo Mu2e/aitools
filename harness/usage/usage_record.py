@@ -47,6 +47,8 @@ def provider_from_endpoint(url: Optional[str], default: str = "unknown") -> str:
     """"litellm" for https://litellm.fnal.gov/..., "vllm" for vllm.fnal.gov:
     the gateway, not the wire protocol -- same rule as the Slack bot."""
     host = urlparse(url or "").hostname or ""
+    if host == "alcf.anl.gov" or host.endswith(".alcf.anl.gov"):
+        return "alcf"   # inference-api.alcf.anl.gov: the gateway is ALCF
     return host.split(".")[0] or default
 
 
