@@ -54,6 +54,11 @@ experiment data, prefer these tools over generic web search:
 - **metacat** — Data catalog: discover datasets, query files, check
   metadata. Use for: "how many reconstruction files exist for run
   campaign X?", "find the MDC2020 simulation datasets".
+- **kb** — Mu2e knowledge base (read-only): search and read Mu2e DocDB
+  documents, including their figures (`kb_research` for multi-step
+  questions). Use for: "what does the TDR say about the stopping target?",
+  "find the DocDB note on the CRV readout", design and reference questions
+  that the logbook or run database won't answer.
 - **memory** — Persistent notes across sessions: store and retrieve
   conclusions, decisions, working notes. Use proactively to remember
   things across conversations.
