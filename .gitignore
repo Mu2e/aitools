@@ -39,5 +39,11 @@
 
 # debug information files
 *.dwo
-harness/claude-code/__pycache__
-harness/claude-code/__pycache__/
+
+# Python build artifacts
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/

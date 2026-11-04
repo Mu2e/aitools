@@ -3,8 +3,8 @@ name: coding-with-query-engine
 description: Build and troubleshoot Mu2e Query Engine (QE) URL reads for PostgreSQL-backed conditions and operations data. Use when composing QE URLs, doing Python HTTP reads, or implementing C++ database fetches with Offline DbService DbReader/DbId helpers.
 compatibility: Requires Mu2e Offline environment, network access to FNAL QE endpoints, and familiarity with Offline/DbService and conditions table naming
 metadata:
-  version: "1.0.1"
-  last-updated: "2026-02-20"
+  version: "1.1.0"
+  last-updated: "2026-10-10"
 ---
 
 # Coding with Query Engine
@@ -54,6 +54,10 @@ Core parameters:
 
 Comparison operators for `w`: `lt`, `le`, `eq`, `ne`, `ge`, `gt`.
 
+That list is exhaustive, lower-case, and **must not be guessed at** — see
+[Unsupported Operators Fail Silently](#unsupported-operators-fail-silently)
+below. There is no `in`, no `like`, no `between`, and `EQ` is not `eq`.
+
 Example semantics:
 
 ```text
@@ -61,6 +65,75 @@ w=cid:eq:2&w=channel:le:1
 ```
 
 means SQL-like AND conditions.
+
+---
+
+## Unsupported Operators Fail Silently
+
+QE parses each `w` term as `col:op:val`. When `op` is not one of the six
+operators above, QE does **not** report an error — it falls back to implicit
+equality and treats the whole remainder as the literal value, building
+`WHERE col = 'op:val'`.
+
+What that costs you depends entirely on the column's type:
+
+| Column type | Result | Visibility |
+|---|---|---|
+| `integer`, `numeric`, `timestamp` | Postgres cannot cast `'op:val'` → Application error, HTTP 500 | **Loud** — you find out immediately |
+| `text` / `varchar` | `col = 'op:val'` is a valid comparison that matches nothing → 0 rows, HTTP 200 | **Silent** — reads as "no such data" |
+
+Verified against `mu2e_dqm_prd`:
+
+```text
+w=sid:bogusop:5          -> HTTP 500: invalid input syntax for type integer: "bogusop:5"
+                            LINE 1: ... where sid = 'bogusop:5'          <- shows the mechanism
+w=end_time:bogusop:...   -> HTTP 500: invalid input syntax for type timestamp with time zone
+w=process:bogusop:valNightly -> HTTP 200, header only, zero rows, no warning
+w=process:like:valN%     -> HTTP 200, zero rows (like is unsupported)
+w=process:EQ:valNightly  -> HTTP 200, zero rows (operators are case-sensitive)
+w=sid:in:5,6             -> HTTP 500 (in is unsupported; int column makes it loud)
+```
+
+The dangerous cell is the text column: a typo'd or invented operator produces a
+clean, successful, empty response that is indistinguishable from a genuine
+absence of data. Any code that reports "no rows found" as a conclusion must not
+be able to reach that state by accident.
+
+### Guard: validate operators at clause-construction time
+
+Never interpolate a caller-supplied operator into a `w` term unchecked. Build
+clauses through a helper that rejects anything outside the known set, so a bad
+operator raises in your own code instead of becoming a silent empty result:
+
+```python
+QE_OPERATORS = frozenset({"lt", "le", "eq", "ne", "ge", "gt"})
+
+
+def where(column: str, op: str, value) -> str:
+    """Build one QE `w` term, rejecting operators QE would silently ignore.
+
+    QE treats an unrecognized operator as part of the VALUE of an implicit
+    equality, so `col:bogus:v` becomes `col = 'bogus:v'` -- an error on a
+    typed column, but a silent zero-row result on a text one. Validating
+    here converts that into an exception at the call site.
+    """
+    if op not in QE_OPERATORS:
+        raise ValueError(
+            f"unsupported QE operator {op!r}; QE accepts only "
+            f"{sorted(QE_OPERATORS)} and silently returns no rows for anything "
+            f"else on a text column. Note there is no 'in' or 'like'."
+        )
+    return f"{column}:{op}:{value}"
+```
+
+Apply the same rule in C++ before pushing terms into a `DbReader::StringVec`.
+
+Two corollaries worth carrying into any QE client:
+
+- An empty result is only authoritative if every operator in the query was
+  validated. Otherwise "zero rows" and "malformed query" are the same response.
+- Prefer the bare `col:value` form for equality over `col:eq:value` when the
+  operator is not a variable — there is no operator to get wrong.
 
 ---
 
@@ -252,7 +325,10 @@ Do not switch to QE official C API for Mu2e Offline code paths unless specifical
 ## Query Composition Rules
 
 1. Keep table and column names exact and lower-case where required by schema.
-2. Build each `w` clause as `field:op:value` unless using implicit `eq` form.
+2. Build each `w` clause as `field:op:value` unless using implicit `eq` form,
+   and validate `op` against the six supported operators first — an
+   unsupported one is silently absorbed into the value on a text column (see
+   [Unsupported Operators Fail Silently](#unsupported-operators-fail-silently)).
 3. Repeat `w` for AND logic; avoid embedding SQL text.
 4. Use deterministic ordering for reproducible comparisons.
 5. Prefer explicit columns over `*` in production code.
@@ -264,9 +340,19 @@ Do not switch to QE official C API for Mu2e Offline code paths unless specifical
 
 ### Empty or unexpected results
 
+- **Check every `w` operator first.** On a text column, an unsupported or
+  misspelled operator returns zero rows under HTTP 200 with no error, which
+  looks exactly like absent data. Only `lt`, `le`, `eq`, `ne`, `ge`, `gt`
+  exist, lower-case. See
+  [Unsupported Operators Fail Silently](#unsupported-operators-fail-silently).
 - Verify `dbname`, schema/table name, and column names
 - Test same URL with no-cache endpoint
-- Remove filters incrementally, then re-add one by one
+- Remove filters incrementally, then re-add one by one — if a filter's removal
+  changes an empty result to a populated one, suspect its operator before its
+  value
+- Re-run the suspect clause against an `integer` or `timestamp` column: a bad
+  operator that is silent on text turns into a loud HTTP 500 there, which names
+  the problem outright
 
 ### Intermittent failures or gateway errors
 

@@ -25,6 +25,8 @@ EXPECTED_TOOLS = {
     "list_values",
     "list_intervals",
     "query_metrics",
+    "list_alarms",
+    "get_alarm_causes",
 }
 
 
