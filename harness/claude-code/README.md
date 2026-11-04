@@ -2,142 +2,170 @@
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](../../LICENSE)
 
-Claude Code for the [Mu2e experiment](https://mu2e.fnal.gov), with
-home-directory relocation (shared home quotas), MCP server sync, Kerberos
-scrubbing, and guardrails hooks. Parallel to `../goose/`, sharing the same
-MCP registry and the same `../shared/mu2e.md` context file.
+[Claude Code](https://code.claude.com) for the [Mu2e experiment](https://mu2e.fnal.gov)
+on the Fermilab gpvm machines: installed into group storage (not
+`/nashome`), wired to litellm.fnal.gov, with the Mu2e MCP servers, Mu2e
+context, guard rails and usage logging. Parallel to [`../goose/`](../goose/README.md);
+overview of both in [`../README.md`](../README.md).
 
 ## Install
 
+Prerequisites: a Mu2e account (member of the `mu2e` group) and a personal
+API key from **https://litellm.fnal.gov** (for the default backend). No
+Node.js needed.
+
 ```bash
-cd ~/aitools/harness/claude-code
+cd /exp/mu2e/app/users/$USER
+git clone https://github.com/Mu2e/aitools.git     # until merged: -b sc/harness https://github.com/corrodis/aitools.git
+cd aitools/harness/claude-code
 . setup.sh
 ```
 
-`setup.sh` will:
+At the prompt, choose **1** (litellm.fnal.gov) and paste your key (input is
+hidden). `setup.sh` is safe to re-run; it only does what's missing:
 
-1. Redirect `$HOME` for claude to `/exp/mu2e/app/users/$USER/claude-code/home/`
-   (keeps `~/.claude.json` and `~/.claude/` off the quota-constrained `/nashome`)
-2. Install the native Claude Code build there if missing (Anthropic's
-   `install.sh`; self-contained, **no Node.js needed**, ~320 MB, auto-updates).
-   Pin a version with `. setup.sh 2.1.318` (or `stable`).
-3. Prompt for an API backend if none is configured:
-   - **litellm.fnal.gov** (recommended — shared Fermilab endpoint, personal key from https://litellm.fnal.gov)
-   - **Personal Anthropic API key** (`console.anthropic.com`)
-4. Seed `~/.claude/settings.json` (default model `sonnet`; hooks: guardrails, session logging)
-5. Symlink `../shared/mu2e.md` → `$CLAUDE_HOME/CLAUDE.md` (auto-discovered context)
-6. Sync MCP servers from the internal registry
-
-> **Every new shell** needs `. env.sh` (or `. setup.sh`) to put claude on PATH
-> and activate the HOME override.
+1. Installs the native Claude Code build into
+   `/exp/mu2e/app/users/$USER/claude-code/home/.local/` (~320 MB; it
+   auto-updates). Pin a version with `. setup.sh 2.1.318` (or `stable`).
+2. Seeds `settings.json` from `settings.json.example`: default model
+   Sonnet, guard-rail and logging hooks, deny rules.
+3. Links the Mu2e context `../shared/mu2e.md` as `CLAUDE.md`.
+4. Asks for a backend if none is configured (see [Backends](#backends)).
+5. Connects the Mu2e MCP servers from the registry on mu2eaigpvm01.
 
 ## Use
 
 ```bash
-claude          # or: mu2eai-claude
+claude                  # interactive (alias: mu2eai-claude)
+claude -p "question"    # one-shot, prints the answer
 ```
+
+In a **new shell**, load the harness first -- otherwise `claude` is not
+found, or runs without the Mu2e setup:
+
+```bash
+. /exp/mu2e/app/users/$USER/aitools/harness/claude-code/env.sh
+```
+
+(`. setup.sh` does the same and also re-checks the install.) Add the line to
+`~/.bashrc` to make it permanent. Always *source* (`. file`), don't run
+(`./file`).
+
+Inside claude:
+
+| | |
+|---|---|
+| `/model` | switch model: `sonnet` (default), `opus`, `haiku`, `fable`, or any litellm name, e.g. `/model azure/claude-opus-4-8` |
+| `/mcp` | the Mu2e MCP servers and their status |
+| `/status` | which backend/account is in use |
+| `/usage` | token use of this session |
 
 ## Backends
 
-`setup.sh` prompts for a backend on first run:
+| Option in `setup.sh` | What you need | Notes |
+|---|---|---|
+| **1 litellm.fnal.gov** | personal key from https://litellm.fnal.gov | recommended |
+| **2 Anthropic API key** | key from console.anthropic.com | pay as you go |
+| **3 skip** → `/login` in claude | claude.ai Pro/Max/Team/Enterprise | |
 
-| Option | How | Best for |
-|--------|-----|---------|
-| **litellm.fnal.gov** | Personal API key from https://litellm.fnal.gov | Most users — shared Fermilab-hosted endpoint |
-| **Anthropic API key** | Key from console.anthropic.com | Pay-as-you-go direct access |
-| **claude.ai subscription** | Skip setup, then `/login` inside claude | Pro/Max/Team/Enterprise subscribers |
+**litellm:** `./setup-litellm.sh` (re)configures it at any time: it asks for
+the key if none is saved and maps Claude Code's model names
+(`sonnet`, `opus`, `haiku`, `fable`) to the newest matching litellm models
+(`azure/claude-sonnet-5-5`, ...). Re-run it when litellm adds new models.
+`./setup-litellm.sh --list-models` shows what litellm offers;
+`--model NAME` forces a default model, overriding the one `/model` saves.
 
-To switch to or update the LiteLLM backend later:
+**claude.ai subscription:** choose 3, start `claude`, type `/login` (it
+prints a URL -- open it in your laptop's browser and paste the code back).
+If you used litellm or an API key before, move
+`$CLAUDE_HOME/.env` away first: a key there takes precedence over the login.
 
-```bash
-./setup-litellm.sh                 # re-prompts for key if needed, maps model aliases
-./setup-litellm.sh --list-models   # see what's available
-```
+The backend settings live in `/exp/mu2e/app/users/$USER/claude-code/home/.env`
+(private, mode 600); `env.sh` loads it.
 
-To use a claude.ai subscription instead, skip the key prompt during setup (option 3)
-then run `claude` and type `/login` at the prompt.
-If you used litellm or an API key before, remove `$CLAUDE_HOME/.env` first:
-an `ANTHROPIC_API_KEY` there takes precedence over the subscription login.
+## MCP servers
 
-## Sync MCP servers
+Connected on install; re-run `./sync-mcp.sh` when the registry has new
+servers. The token-gated ones (ecl, runs, memory, kb) need the shared Mu2e
+MIKEY key: Claude Code fetches it on each connect via
+`../shared/mcp-headers.sh` → `getMu2eKey`, so it is never stored in the
+config and no personal token file is needed. (Where that can't work
+without Kerberos, `sync-mcp.sh` stores the header instead and says so.)
 
-MCP servers are synced automatically on install. Re-run only if the registry
-has changed:
+## Guard rails
 
-```bash
-./sync-mcp.sh
-```
+- The session has **no Kerberos ticket** and its `$HOME` is the harness
+  directory (no `~/.ssh`), so remote logins fail. Run `kinit`, `ssh`, `sudo`
+  yourself, outside claude.
+- A PreToolUse hook (`hooks/block-commands.sh` →
+  `../shared/block_commands.py`) refuses `ssh`, `scp`, `sftp`, `rsync`,
+  `kinit`, `sudo`, `su` -- also behind `env`, `timeout`, `xargs`, `sh -c '...'`,
+  `$(...)` -- and `permissions.deny` in `settings.json` adds Claude Code's
+  own check. A guard rail, not a sandbox: the agent runs with your Unix
+  permissions.
 
-Token-gated servers (ecl, runs, memory, kb) get a `headersHelper`
-(`../shared/mcp-headers.sh`): Claude Code fetches the MIKEY token via
-`getMu2eKey` on each connect, so it is never stored in `~/.claude.json` and a
-rotated key needs no re-sync. If the helper can't get the token without
-Kerberos on this host, `sync-mcp.sh` stores the header instead and says so.
+## Usage log
 
-## Shared context (CLAUDE.md / TOM)
-
-Both Claude Code and the goose harness draw from the same file:
-
-```
-../shared/mu2e.md
-```
-
-- **Claude Code**: auto-discovered as `$HOME/CLAUDE.md` (symlinked by setup.sh).
-  Injected into every session automatically.
-- **goose**: injected via the TOM (Top Of Mind) extension using
-  `GOOSE_MOIM_MESSAGE_FILE`, set automatically by `../goose/env.sh`.
-
-Edit `../shared/mu2e.md` to update context for both tools at once.
-
-## Hooks / guardrails
-
-Configured in `$CLAUDE_HOME/.claude/settings.json` (seeded from
-`settings.json.example`):
-
-| Hook | Trigger | Effect |
-|------|---------|--------|
-| `block-commands.sh` | PreToolUse (Bash) | Blocks `ssh`, `scp`, `sftp`, `rsync`, `kinit`, `sudo`, `su` -- also behind `env`/`timeout`/`xargs`/..., `sh -c '...'`, `$(...)` (`../shared/block_commands.py`, shared with goose) |
-| `log-session.sh` | UserPromptSubmit + Stop + SessionEnd | Session usage log (see below) |
-
-Blocking is a heuristic guard rail, not a hard sandbox. The `permissions.deny`
-rules in `settings.json` add a second layer (Claude Code's own permission
-system), but the agent still runs with your full Unix permissions.
-
-## Session usage logging
-
-`hooks/log-session.sh` runs `log-session-claude.py` after every prompt and
-reply. It reads the session transcript
-(`$CLAUDE_HOME/.claude/projects/<dir>/<session-id>.jsonl`) and upserts one
+`hooks/log-session.sh` (on UserPromptSubmit, Stop and SessionEnd) runs
+`log-session-claude.py`, which reads the session transcript and upserts one
 line per session into `/exp/mu2e/app/users/$USER/claude-code/log/usage.jsonl`.
-
 Records have the columns of the shared table `usage.sessions`
-(`../usage/sessions.sql`), the same shape the Slack bot and the goose harness
-write (shared code: `../usage/usage_record.py`): counts, timings, model and
-tool names only -- no user, working directory or content.
+(`../usage/sessions.sql`), like the goose harness and the Slack bot: counts,
+timings, model and tool names only -- no user, directory or content.
+
+## Sandboxed: claudebox
+
+`/cvmfs/mu2e.opensciencegrid.org/bin/claudebox` runs Claude Code in an
+apptainer container that sees only `/cvmfs` (read-only) and **one work
+directory** -- no home, no other `/exp` areas, no Kerberos, no tokens. With
+the harness loaded, `claudebox` gets the harness defaults (via
+`claudebox.sh`): this Claude Code binary, your litellm backend and model
+mapping, the Mu2e MCP servers and their key, the Mu2e context, Sonnet.
+
+```bash
+cd /exp/mu2e/app/users/$USER/myproject
+claudebox                          # interactive, only this directory writable (= claudebox run)
+claudebox agent nightly -f task.txt   # unattended in the background (no permission prompts)
+claudebox list | log nightly -f | stop nightly
+claudebox help                     # everything else (--krb5, --github, --bind, ...)
+```
+
+The container has its own home (`/exp/mu2e/app/users/$USER/claudebox/`),
+separate from the harness one. `run` sessions are added to the usage log;
+`agent` runs are not (yet). `command claudebox` runs the plain CVMFS
+version without the harness defaults.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `claude: command not found` in a new shell | `. env.sh` (see [Use](#use)) |
+| `API Error: 400 ... Invalid model name` | the model name isn't one litellm knows: `./setup-litellm.sh` to refresh the model mapping, then restart claude |
+| claude starts, but replies `Not logged in · Please run /login` | no backend configured: `./setup-litellm.sh`, or `/login` for a subscription |
+| an MCP server shows `✘ Failed` in `claude mcp list` | `./sync-mcp.sh`; the token-gated servers need read access to the Mu2e key (member of `mu2e`) |
+| `/login` seems ignored | a key in `$CLAUDE_HOME/.env` wins -- move the file away, open a new shell |
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `env.sh` | Source to put claude on PATH and activate HOME override |
-| `setup.sh` | Idempotent install + config setup (source or run) |
-| `setup-litellm.sh` | Configure the litellm.fnal.gov backend |
-| `sync-mcp.sh` | Sync MCP servers from the internal registry |
-| `sync_mcp_claude.py` | Python worker for sync-mcp.sh |
-| `settings.json.example` | Tracked settings template (live settings outside this repo) |
-| `hooks/block-commands.sh` | PreToolUse guardrail |
-| `hooks/log-session.sh` | Usage logging hook (runs `log-session-claude.py`) |
-| `../shared/block_commands.py` | Command guard rail used by both harnesses' PreToolUse hooks |
-| `../shared/mu2e.md` | Shared experiment context (CLAUDE.md + goose TOM) |
-| `../shared/mikey-token.sh` | MIKEY token lookup for MCP sync (env → personal file → `getMu2eKey`) |
-| `../shared/mcp-headers.sh` | MCP `headersHelper`: prints the MIKEY Authorization header on each connect |
-| `../shared/getMu2eKey` | Vendored copy of the CVMFS `getMu2eKey` (fallback when CVMFS is absent) |
+| `env.sh` | Source in each shell: `claude` with the harness `$HOME`, no Kerberos, private umask |
+| `setup.sh` | Idempotent install + configuration (source it) |
+| `setup-litellm.sh` | Configure litellm.fnal.gov: key, model mapping |
+| `sync-mcp.sh`, `sync_mcp_claude.py` | Connect the MCP servers from the registry |
+| `settings.json.example` | Template for `settings.json` (the live copy is outside the repo) |
+| `claudebox.sh` | Harness defaults for the CVMFS `claudebox` (the `claudebox` function in `env.sh`) |
+| `hooks/block-commands.sh` | PreToolUse guard rail |
+| `hooks/log-session.sh`, `log-session-claude.py` | Usage log |
+| `../shared/`, `../usage/` | Shared with goose -- see [`../README.md`](../README.md#whats-shared-between-the-harnesses) |
 
-## Testing a fresh install
+## For developers: test a fresh install
 
-To try `setup.sh` from scratch without touching your real setup, point the
-harness at an empty directory:
+`CLAUDE_HARNESS_ROOT` points the whole harness at another directory, so you
+can run the install from scratch without touching your own setup:
 
 ```bash
 CLAUDE_HARNESS_ROOT=/tmp/claude-test . setup.sh
 ```
+
+(Start a new shell afterwards to get back to your real setup.)

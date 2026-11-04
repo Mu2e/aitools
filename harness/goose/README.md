@@ -7,17 +7,15 @@ AI assistant for the [Mu2e experiment](https://mu2e.fnal.gov), built on top of
 XDG relocation (shared home-dir quotas are small), MCP server sync, Kerberos
 scrubbing, guardrails, and optional local tracing.
 
-## Clone
-
-```bash
-git clone https://github.com/Mu2e/aitools ~/aitools
-cd ~/aitools/harness/goose
-```
-
 ## Install
 
+On a gpvm (see also the overview in [`../README.md`](../README.md)):
+
 ```bash
-. setup.sh           # source to also put goose on PATH in this shell
+cd /exp/mu2e/app/users/$USER
+git clone https://github.com/Mu2e/aitools.git     # until merged: -b sc/harness https://github.com/corrodis/aitools.git
+cd aitools/harness/goose
+. setup.sh           # source it, so goose is also on PATH in this shell
 ```
 
 `setup.sh` will:
@@ -29,8 +27,9 @@ cd ~/aitools/harness/goose
 
 For a pinned version: `. setup.sh 1.0.25`
 
-> **Every new shell** needs `. env.sh` (or `. setup.sh`) to put goose on PATH.
-> Add it to your `.bashrc` to make this automatic.
+> **Every new shell** needs
+> `. /exp/mu2e/app/users/$USER/aitools/harness/goose/env.sh` (or `. setup.sh`)
+> to put goose on PATH. Add it to your `~/.bashrc` to make this automatic.
 
 ## Use
 
@@ -44,11 +43,14 @@ mu2eai               # start an interactive session
 mu2eai-model         # interactive fuzzy picker (requires fzf)
 ```
 
-Backends: internal `vllm.fnal.gov` (default), ALCF sophia/metis, `litellm.fnal.gov`.
+Backends: internal `vllm.fnal.gov` (default, no key), ALCF sophia/metis
+(`./alcf.sh`, Globus login), `litellm.fnal.gov` (`./setup-litellm.sh`,
+personal key from https://litellm.fnal.gov).
 
 ### Sync MCP servers
 
-MCP servers are synced automatically on install. Re-run only if the registry has changed:
+MCP servers are synced automatically on install. Re-run only if the registry has changed
+(the token for the token-gated servers comes from `getMu2eKey`, see `../shared/mikey-token.sh`):
 
 ```bash
 ./sync-mcp.sh
@@ -94,7 +96,8 @@ ssh -L 16686:localhost:16686 <this-host>
 | `alcf.sh` | Switch to an ALCF inference endpoint |
 | `setup-litellm.sh` | Switch to the litellm.fnal.gov endpoint |
 | `config.yaml.example` | Tracked config template (live config stays outside this repo) |
-| `log-session.py` | Log session usage from goose's SQLite → jsonl or PostgreSQL |
+| `log-session.py` | Session usage from goose's SQLite → `usage.jsonl` (`usage.sessions` format) |
 | `../shared/mikey-token.sh` | MIKEY token lookup for MCP sync (env → personal file → `getMu2eKey`) |
 | `../shared/getMu2eKey` | Vendored copy of the CVMFS `getMu2eKey` (fallback when CVMFS is absent) |
-| `guardrails-plugin/` | goose plugin: guardrails, session banner (⚛ mu2eai), usage logging |
+| `guardrails-plugin/` | goose plugin: guard rail (→ `../shared/block_commands.py`), session banner (⚛ mu2eai), usage logging |
+| `../shared/mu2e.md` | Mu2e context, injected via TOM (`GOOSE_MOIM_MESSAGE_FILE`, set by `env.sh`) |

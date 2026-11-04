@@ -76,6 +76,14 @@ mu2eai-claude() {
   claude "$@"
 }
 
+# Sandboxed Claude: shadows the CVMFS claudebox (Claude Code in an
+# apptainer container) with the harness defaults -- native binary, litellm
+# model mapping, Mu2e MCP servers and key, Mu2e context. See claudebox.sh.
+# `command claudebox` runs the plain CVMFS version.
+claudebox() {
+  "$CLAUDE_HARNESS_DIR/claudebox.sh" "$@"
+}
+
 # Export the harness directory so the shell functions above can find their
 # scripts even after env_script_dir is unset (functions are evaluated lazily).
 export CLAUDE_HARNESS_DIR="$env_script_dir"
