@@ -96,7 +96,7 @@ Configured in `$CLAUDE_HOME/.claude/settings.json` (seeded from
 
 | Hook | Trigger | Effect |
 |------|---------|--------|
-| `block-commands.sh` | PreToolUse (Bash) | Blocks `ssh`, `scp`, `sftp`, `rsync`, `kinit`, `sudo`, `su` |
+| `block-commands.sh` | PreToolUse (Bash) | Blocks `ssh`, `scp`, `sftp`, `rsync`, `kinit`, `sudo`, `su` -- also behind `env`/`timeout`/`xargs`/..., `sh -c '...'`, `$(...)` (`../shared/block_commands.py`, shared with goose) |
 | `log-session.sh` | UserPromptSubmit + Stop + SessionEnd | Session usage log (see below) |
 
 Blocking is a heuristic guard rail, not a hard sandbox. The `permissions.deny`
@@ -127,6 +127,7 @@ tool names only -- no user, working directory or content.
 | `settings.json.example` | Tracked settings template (live settings outside this repo) |
 | `hooks/block-commands.sh` | PreToolUse guardrail |
 | `hooks/log-session.sh` | Usage logging hook (runs `log-session-claude.py`) |
+| `../shared/block_commands.py` | Command guard rail used by both harnesses' PreToolUse hooks |
 | `../shared/mu2e.md` | Shared experiment context (CLAUDE.md + goose TOM) |
 | `../shared/mikey-token.sh` | MIKEY token lookup for MCP sync (env → personal file → `getMu2eKey`) |
 | `../shared/mcp-headers.sh` | MCP `headersHelper`: prints the MIKEY Authorization header on each connect |
