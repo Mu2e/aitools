@@ -43,9 +43,20 @@ mu2eai               # start an interactive session
 mu2eai-model         # interactive fuzzy picker (requires fzf)
 ```
 
-Backends: internal `vllm.fnal.gov` (default, no key), ALCF sophia/metis
-(`./alcf.sh`, Globus login), `litellm.fnal.gov` (`./setup-litellm.sh`,
-personal key from https://litellm.fnal.gov).
+| Backend | How | Key |
+|---|---|---|
+| `vllm.fnal.gov` (default) | `mu2eai-model` → default, or `./alcf.sh --restore-default` | none |
+| `litellm.fnal.gov` | `mu2eai-model` → litellm, or `./setup-litellm.sh --model NAME` | personal key from https://litellm.fnal.gov (the same key works for the claude-code harness) |
+| ALCF (metis, sophia, minerva, tara, ...) | `mu2eai-model` → alcf, or `./alcf.sh --cluster NAME --model NAME` | Globus login (fnal.gov or anl.gov identity) |
+
+`./setup-litellm.sh --list-models`, `./alcf.sh --list-clusters` and
+`./alcf.sh --list-models --cluster NAME` show what's available.
+
+Keys are checked before use. A litellm key that litellm rejects (expired,
+revoked, mistyped) is reported and you're asked for a new one. ALCF
+periodically requires a *fresh* Globus login ("high-assurance timeout"),
+which a token refresh doesn't satisfy: the scripts then ask you to log out
+at https://app.globus.org/logout and log in again.
 
 ### Sync MCP servers
 
@@ -64,6 +75,22 @@ session, updated live). Records have the columns of the shared table
 `usage.sessions` (`../usage/sessions.sql`), the same shape the Slack bot and
 the claude-code harness write: counts, timings, model and tool names only --
 no user, session name, working directory or content.
+
+### Guard rails
+
+goose runs with your `$HOME` pointed at `/exp/mu2e/app/users/$USER/goose/home`
+(no `~/.ssh`) and without your Kerberos ticket. The plugin
+`guardrails-plugin/` (linked into that home by `env.sh`) also refuses
+`ssh`, `scp`, `sftp`, `rsync`, `kinit`, `sudo`, `su` -- also behind `env`,
+`timeout`, `sh -c '...'`, `$(...)` -- via `../shared/block_commands.py`, the
+same check the claude-code harness uses. A guard rail, not a sandbox.
+
+When the plugin is active, an interactive session (`mu2eai`) starts with a
+`⚛ mu2eai` banner line (`goose run` doesn't show it). **No banner = no
+guard rail and no usage log** for that session (seen occasionally, cause
+not yet known); check that the `plugins:` section of
+`/exp/mu2e/app/users/$USER/goose/config/goose/config.yaml` lists
+`mu2e-guardrails` with `enabled: true`, and start a new session.
 
 ### Optional: local tracing (OpenTelemetry → Jaeger)
 
@@ -101,3 +128,22 @@ ssh -L 16686:localhost:16686 <this-host>
 | `../shared/getMu2eKey` | Vendored copy of the CVMFS `getMu2eKey` (fallback when CVMFS is absent) |
 | `guardrails-plugin/` | goose plugin: guard rail (→ `../shared/block_commands.py`), session banner (⚛ mu2eai), usage logging |
 | `../shared/mu2e.md` | Mu2e context, injected via TOM (`GOOSE_MOIM_MESSAGE_FILE`, set by `env.sh`) |
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `goose: command not found` in a new shell | `. env.sh` |
+| `mu2eai-model` shows an empty model list | fixed: the scripts now print the server's error; follow it (new litellm key / fresh ALCF login) |
+| no `⚛ mu2eai` banner when an interactive session starts | see [Guard rails](#guard-rails) |
+| an MCP server missing | `./sync-mcp.sh`; the token-gated ones need read access to the Mu2e key (member of `mu2e`) |
+
+## For developers: test a fresh install
+
+`GOOSE_HARNESS_ROOT` points the whole harness at another directory:
+
+```bash
+GOOSE_HARNESS_ROOT=/tmp/goose-test . setup.sh
+```
+
+(Start a new shell afterwards to get back to your real setup.)

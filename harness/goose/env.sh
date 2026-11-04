@@ -9,7 +9,10 @@
 # is defined in exactly one place.
 
 env_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-goose_root="/exp/mu2e/app/users/$USER/goose"
+# GOOSE_HARNESS_ROOT points the whole harness elsewhere (e.g. to test a
+# fresh install); GOOSE_ROOT is exported for the helper scripts.
+goose_root="${GOOSE_HARNESS_ROOT:-/exp/mu2e/app/users/$USER/goose}"
+export GOOSE_ROOT="$goose_root"
 
 export GOOSE_BIN_DIR="$goose_root/bin"
 

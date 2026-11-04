@@ -47,7 +47,7 @@ USAGE
 }
 
 container_name="mu2eai-jaeger"
-goose_root="/exp/mu2e/app/users/$USER/goose"
+goose_root="${GOOSE_ROOT:-${GOOSE_HARNESS_ROOT:-/exp/mu2e/app/users/$USER/goose}}"
 image="docker.io/jaegertracing/all-in-one:latest"
 
 cmd="${1:-}"
