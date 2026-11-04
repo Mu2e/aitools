@@ -10,8 +10,9 @@ set -euo pipefail
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  ./alcf.sh --model NAME [--cluster sophia|metis]
-  ./alcf.sh --list-models [--cluster sophia|metis]
+  ./alcf.sh --model NAME [--cluster NAME]
+  ./alcf.sh --list-models [--cluster NAME]
+  ./alcf.sh --list-clusters
   ./alcf.sh --restore-default
 
 Gets an ALCF (Argonne Leadership Computing Facility) inference-service
@@ -26,11 +27,14 @@ puts the template's vllm.fnal.gov settings back.
 (ALCF doesn't use the `litellm` slot: that's reserved for the actual
 litellm.fnal.gov proxy, configured separately by setup-litellm.sh.)
 
-  --cluster sophia|metis   Which ALCF cluster to use (default: metis).
+  --cluster NAME           Which ALCF cluster to use (default: metis);
+                           --list-clusters shows what ALCF offers
+                           (e.g. metis, sophia, minerva, tara).
   --model NAME             Model to request. Required unless
                             --list-models or --restore-default is given.
   --list-models            Print available models for the cluster and
                             exit, without changing anything.
+  --list-clusters          Print ALCF's clusters (with model counts) and exit.
   --restore-default        Put back the openai provider settings from
                             config.yaml.example (undoes a previous run).
 USAGE
@@ -56,6 +60,10 @@ while [[ $# -gt 0 ]]; do
       list_only=1
       shift
       ;;
+    --list-clusters)
+      list_only=2
+      shift
+      ;;
     --restore-default)
       restore_default=1
       shift
@@ -70,8 +78,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$cluster" != "sophia" && "$cluster" != "metis" ]]; then
-  echo "Error: --cluster must be 'sophia' or 'metis', got '$cluster'" >&2
+if [[ ! "$cluster" =~ ^[a-z0-9_-]+$ ]]; then
+  echo "Error: --cluster must be a cluster name (see --list-clusters), got '$cluster'" >&2
   exit 2
 fi
 
@@ -101,24 +109,57 @@ fi
 
 source "$script_dir/alcf_ensure_token.sh"
 
-if [[ "$cluster" == "metis" ]]; then
-  base_url="https://inference-api.alcf.anl.gov/resource_server/metis/api/v1"
-else
-  base_url="https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1"
+# Clusters, frameworks and models come from ALCF's own list-endpoints,
+# so new clusters (minerva, tara, ...) work without changes here. The
+# OpenAI-compatible base URL is .../resource_server/<cluster>/<framework>/v1
+# (sophia/vllm, metis/api); for a cluster with several frameworks the one
+# with models is used, preferring vllm, then api.
+alcf_api="https://inference-api.alcf.anl.gov/resource_server"
+endpoints="$(curl -sS -m 30 "$alcf_api/list-endpoints" -H "Authorization: Bearer ${ALCF_TOKEN}")" || {
+  echo "Error: could not reach $alcf_api" >&2; exit 1; }
+lookup="$(printf '%s' "$endpoints" | "$ALCF_VENV/bin/python" -I -c '
+import sys, json
+mode, cluster = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    sys.exit("Error: ALCF returned no usable answer")
+if "error" in data:
+    e = data["error"]
+    sys.exit("Error: " + str(e.get("message", e) if isinstance(e, dict) else e))
+clusters = data.get("clusters", {})
+def frameworks(c):
+    fw = (clusters.get(c) or {}).get("frameworks", {}) or {}
+    return {k: list((v or {}).get("models", []) or []) for k, v in fw.items()}
+if mode == "clusters":
+    for c in sorted(clusters):
+        n = sum(len(m) for m in frameworks(c).values())
+        print(f"{c}\t{n} models")
+    sys.exit(0)
+fw = frameworks(cluster)
+if not fw:
+    have = ", ".join(sorted(clusters))
+    sys.exit(f"Error: ALCF has no cluster {cluster!r} (have: {have})")
+with_models = [k for k, m in fw.items() if m]
+order = [k for k in ("vllm", "api") if k in with_models] + sorted(set(with_models) - {"vllm", "api"})
+framework = (order or sorted(fw))[0]
+print(framework)
+for m in fw[framework]:
+    print(m)
+' "$([[ "$list_only" == 2 ]] && echo clusters || echo models)" "$cluster")" || exit 1
+
+if [[ "$list_only" == "2" ]]; then
+  echo "ALCF clusters:"
+  printf '%s\n' "$lookup" | sed 's/^/  /'
+  exit 0
 fi
 
+framework="$(printf '%s\n' "$lookup" | head -1)"
+base_url="$alcf_api/$cluster/$framework/v1"
+
 if [[ "$list_only" == "1" ]]; then
-  echo "Available models on $cluster:"
-  curl -sS -X GET "https://inference-api.alcf.anl.gov/resource_server/list-endpoints" -H "Authorization: Bearer ${ALCF_TOKEN}" \
-    | "$ALCF_VENV/bin/python" -c "
-import sys, json
-data = json.load(sys.stdin)
-cluster = '$cluster'
-framework = 'api' if cluster == 'metis' else 'vllm'
-models = data.get('clusters', {}).get(cluster, {}).get('frameworks', {}).get(framework, {}).get('models', [])
-for m in models:
-    print(f'  {m}')
-"
+  echo "Available models on $cluster ($framework):"
+  printf '%s\n' "$lookup" | tail -n +2 | sed 's/^/  /'
   exit 0
 fi
 

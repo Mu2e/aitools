@@ -13,7 +13,7 @@ Usage:
   ./goose-model.sh
 
 Interactive model picker: pick a backend (the internal vllm.fnal.gov
-default, ALCF sophia, ALCF metis, or litellm.fnal.gov), see its live
+default, an ALCF cluster, or litellm.fnal.gov), see its live
 model list in an fzf fuzzy-picker, and switch goose to it.
 
 Thin orchestrator, not a reimplementation -- it just calls alcf.sh /
@@ -39,7 +39,7 @@ source "$script_dir/env.sh"
 
 backend="$(printf '%s\n' \
   "default   -- internal vllm.fnal.gov (no auth, single model)" \
-  "alcf      -- Argonne (asks sophia/metis next)" \
+  "alcf      -- Argonne (asks for the cluster next)" \
   "litellm   -- litellm.fnal.gov" \
   | fzf --prompt="backend> " --with-nth=1,2 --delimiter=' -- ' | awk '{print $1}')"
 
@@ -53,12 +53,13 @@ case "$backend" in
     exec "$script_dir/alcf.sh" --restore-default
     ;;
   alcf)
-    cluster="$(printf '%s\n' metis sophia | fzf --prompt="ALCF cluster> ")"
+    source "$script_dir/alcf_ensure_token.sh"
+    clusters="$("$script_dir/alcf.sh" --list-clusters | tail -n +2 | sed -E 's/^[[:space:]]+//')"
+    cluster="$(printf '%s\n' "$clusters" | fzf --prompt="ALCF cluster> " | cut -f1)"
     if [[ -z "$cluster" ]]; then
       echo "No cluster selected." >&2
       exit 1
     fi
-    source "$script_dir/alcf_ensure_token.sh"
     echo "Fetching model list for ALCF $cluster..." >&2
     models="$("$script_dir/alcf.sh" --list-models --cluster "$cluster" | tail -n +2 | sed -E 's/^[[:space:]]+//')"
     picked="$(printf '%s\n' "$models" | fzf --prompt="ALCF $cluster model> ")"

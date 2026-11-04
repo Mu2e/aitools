@@ -76,11 +76,20 @@ if [[ "$list_only" == "1" ]]; then
   curl -sS -X GET "$host/v1/models" -H "Authorization: Bearer ${LITELLM_KEY}" \
     | python3 -c "
 import sys, json
-data = json.load(sys.stdin)
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    sys.exit('Error: litellm.fnal.gov returned no usable answer')
+if 'error' in data:
+    msg = str(data['error'].get('message', data['error']))
+    if 'Invalid proxy server token' in msg or 'token_not_found' in str(data):
+        msg = ('litellm.fnal.gov rejected the key (expired or revoked) -- '
+               'get a new one at https://litellm.fnal.gov')
+    sys.exit('Error: ' + msg)
 for m in data.get('data', []):
     print(f\"  {m.get('id')}\")
 "
-  exit 0
+  exit $?
 fi
 
 # Try to capture the model's real context limit from litellm.fnal.gov's
