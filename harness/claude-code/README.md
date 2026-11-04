@@ -66,6 +66,12 @@ has changed:
 ./sync-mcp.sh
 ```
 
+Token-gated servers (ecl, runs, memory, kb) get a `headersHelper`
+(`../shared/mcp-headers.sh`): Claude Code fetches the MIKEY token via
+`getMu2eKey` on each connect, so it is never stored in `~/.claude.json` and a
+rotated key needs no re-sync. If the helper can't get the token without
+Kerberos on this host, `sync-mcp.sh` stores the header instead and says so.
+
 ## Shared context (CLAUDE.md / TOM)
 
 Both Claude Code and the goose harness draw from the same file:
@@ -121,6 +127,7 @@ tool names only -- no user, working directory or content.
 | `hooks/log-session.sh` | Usage logging hook (runs `log-session-claude.py`) |
 | `../shared/mu2e.md` | Shared experiment context (CLAUDE.md + goose TOM) |
 | `../shared/mikey-token.sh` | MIKEY token lookup for MCP sync (env → personal file → `getMu2eKey`) |
+| `../shared/mcp-headers.sh` | MCP `headersHelper`: prints the MIKEY Authorization header on each connect |
 | `../shared/getMu2eKey` | Vendored copy of the CVMFS `getMu2eKey` (fallback when CVMFS is absent) |
 
 ## Testing a fresh install

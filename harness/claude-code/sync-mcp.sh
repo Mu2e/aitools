@@ -53,6 +53,17 @@ fi
 
 source "$script_dir/../shared/mikey-token.sh"
 
+# Prefer a headersHelper (token fetched on each connect, never stored in
+# ~/.claude.json) -- but only if it works the way Claude Code will run it:
+# inside the session, without Kerberos. Otherwise store the header.
+headers_helper="$(cd "$script_dir/../shared" && pwd)/mcp-headers.sh"
+if [[ -n "$MIKEY_TOKEN" ]] && env -u MIKEY_TOKEN KRB5CCNAME=/nonexistent "$headers_helper" >/dev/null 2>&1; then
+  export MCP_HEADERS_HELPER="$headers_helper"
+else
+  echo "Note: $headers_helper can't get the token without Kerberos on this host --" >&2
+  echo "  storing the token in $claude_json instead (re-run sync-mcp.sh if it changes)." >&2
+fi
+
 tmp_json="$(mktemp)"
 trap 'rm -f "$tmp_json"' EXIT
 

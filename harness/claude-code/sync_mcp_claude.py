@@ -4,9 +4,12 @@ servers (user scope -- applies to all projects for this user).
 
 Usage: sync_mcp_claude.py <registry-json-file> <claude-json-file>
 
-Reads the bearer token (for registry entries with "token": "yes") from the
-MIKEY_TOKEN environment variable. Never from argv (visible to other users
-via `ps`).
+Token-gated registry entries ("token": "yes") get, in order of preference:
+  - "headersHelper": $MCP_HEADERS_HELPER, if set -- a command Claude Code
+    runs on each connect that prints the Authorization header, so the token
+    is never stored here (sync-mcp.sh sets it after testing the helper);
+  - "headers" with the bearer token from $MIKEY_TOKEN (never from argv,
+    which is visible to other users via `ps`).
 
 Claude Code's ~/.claude.json structure (user-scope MCP servers):
 
@@ -15,7 +18,8 @@ Claude Code's ~/.claude.json structure (user-scope MCP servers):
         "<name>": {
           "type": "http",
           "url": "<url>",
-          "headers": { "Authorization": "Bearer <token>" }   # if token needed
+          "headersHelper": "<command>"                       # if token needed, or
+          "headers": { "Authorization": "Bearer <token>" }   # fallback
         }
       },
       ...other claude.json fields...
@@ -39,6 +43,7 @@ def main() -> int:
 
     registry_path, claude_json_path = sys.argv[1], sys.argv[2]
     token = os.environ.get("MIKEY_TOKEN", "")
+    helper = os.environ.get("MCP_HEADERS_HELPER", "")
 
     with open(registry_path) as f:
         registry = json.load(f)
@@ -68,7 +73,9 @@ def main() -> int:
         }
 
         if needs_token:
-            if token:
+            if helper:
+                server["headersHelper"] = helper
+            elif token:
                 server["headers"] = {"Authorization": f"Bearer {token}"}
             else:
                 # Mark as disabled -- Claude Code doesn't have an 'enabled'
@@ -100,6 +107,8 @@ def main() -> int:
         print(f"Added: {', '.join(sorted(added))}")
     if updated:
         print(f"Updated: {', '.join(sorted(updated))}")
+    if helper:
+        print(f"Token-gated servers get their header from: {helper}")
     if disabled_no_token:
         print(
             f"No token available -- added with disabled marker: "
