@@ -21,10 +21,11 @@ is left unchanged. Safe to re-run as the registry changes.
 For servers whose registry entry has "token": "yes", the Authorization
 header is filled in from (in order):
   1. $MIKEY_TOKEN, if set
-  2. /exp/mu2e/app/users/$USER/mikey_token, if that file exists (private,
-     0600, shared between the goose and claude-code harnesses -- see
-     mikey/README.md at the repo root for how to get a token)
-If neither is available, that server is added with a disabled marker
+  2. /exp/mu2e/app/users/$USER/mikey_token (optional personal override)
+  3. getMu2eKey -- the generic Mu2e key (CVMFS, or the vendored copy in
+     ../shared/; needs a Kerberos ticket if the key isn't local)
+See ../shared/mikey-token.sh.
+If none is available, that server is added with a disabled marker
 rather than skipped or left half-configured.
 
 Requires env.sh to have been sourced (for CLAUDE_HOME).
@@ -41,7 +42,6 @@ source "$script_dir/env.sh"
 
 registry_url="${1:-http://mu2eaigpvm01.fnal.gov:8000/registry}"
 claude_json="$CLAUDE_HOME/.claude.json"
-token_file="/exp/mu2e/app/users/$USER/mikey_token"
 
 if [[ ! -f "$claude_json" ]]; then
   # Create a minimal ~/.claude.json so sync_mcp_claude.py can update it.
@@ -51,10 +51,7 @@ if [[ ! -f "$claude_json" ]]; then
   echo "Created $claude_json (minimal skeleton)"
 fi
 
-if [[ -z "${MIKEY_TOKEN:-}" && -f "$token_file" ]]; then
-  MIKEY_TOKEN="$(cat "$token_file")"
-fi
-export MIKEY_TOKEN="${MIKEY_TOKEN:-}"
+source "$script_dir/../shared/mikey-token.sh"
 
 tmp_json="$(mktemp)"
 trap 'rm -f "$tmp_json"' EXIT

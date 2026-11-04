@@ -25,10 +25,11 @@ changes.
 For servers whose registry entry has "token": "yes", the Authorization
 header is filled in from (in order):
   1. $MIKEY_TOKEN, if set
-  2. /exp/mu2e/app/users/$USER/mikey_token, if that file exists (private,
-     0600, shared between the goose and claude-code harnesses -- see
-     mikey/README.md at the repo root for how to get a token)
-If neither is available, that server is still added, but disabled
+  2. /exp/mu2e/app/users/$USER/mikey_token (optional personal override)
+  3. getMu2eKey -- the generic Mu2e key (CVMFS, or the vendored copy in
+     ../shared/; needs a Kerberos ticket if the key isn't local)
+See ../shared/mikey-token.sh.
+If none is available, that server is still added, but disabled
 (enabled: false) rather than skipped silently or left half-configured.
 USAGE
   exit 2
@@ -43,17 +44,13 @@ source "$script_dir/env.sh"
 
 registry_url="${1:-http://mu2eaigpvm01.fnal.gov:8000/registry}"
 config_file="$XDG_CONFIG_HOME/goose/config.yaml"
-token_file="/exp/mu2e/app/users/$USER/mikey_token"
 
 if [[ ! -f "$config_file" ]]; then
   echo "Error: no live config.yaml yet at $config_file -- run setup.sh first" >&2
   exit 1
 fi
 
-if [[ -z "${MIKEY_TOKEN:-}" && -f "$token_file" ]]; then
-  MIKEY_TOKEN="$(cat "$token_file")"
-fi
-export MIKEY_TOKEN="${MIKEY_TOKEN:-}"
+source "$script_dir/../shared/mikey-token.sh"
 
 tmp_json="$(mktemp)"
 trap 'rm -f "$tmp_json"' EXIT
