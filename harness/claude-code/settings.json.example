@@ -34,6 +34,17 @@
           }
         ]
       }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_HARNESS_DIR}/log-session.sh",
+            "timeout": 30
+          }
+        ]
+      }
     ]
   },
   "permissions": {

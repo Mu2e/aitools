@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Stop + UserPromptSubmit hook -- log usage summary for the current session.
+# UserPromptSubmit + Stop + SessionEnd hook -- log usage summary for the
+# current session. SessionEnd catches sessions whose requests all failed
+# (Stop does not fire then) and the final state on exit.
 #
 # Claude Code hook payload on stdin:
-#   { "hook_event_name": "Stop"|"UserPromptSubmit", "session_id": "...", ... }
+#   { "hook_event_name": "Stop"|"UserPromptSubmit"|"SessionEnd", "session_id": "...", ... }
 #
-# On Stop the final assistant message is not yet in the transcript when the
+# On Stop/SessionEnd the final assistant message is not yet in the transcript when the
 # hook fires, so the logger runs detached after a short delay (setsid: it
 # must outlive `claude -p`, which exits right after the hook).
 #
@@ -31,7 +33,7 @@ if [[ ! -f "$log_script" ]]; then
   exit 0
 fi
 
-if [[ "$event" == "Stop" ]]; then
+if [[ "$event" == "Stop" || "$event" == "SessionEnd" ]]; then
   setsid bash -c 'sleep 2; exec python3 "$0" "$1"' "$log_script" "$session_id" \
     </dev/null >/dev/null 2>&1 &
   exit 0

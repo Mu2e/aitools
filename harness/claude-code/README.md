@@ -97,7 +97,7 @@ Configured in `$CLAUDE_HOME/.claude/settings.json` (seeded from
 | Hook | Trigger | Effect |
 |------|---------|--------|
 | `block-commands.sh` | PreToolUse (Bash) | Blocks `ssh`, `scp`, `sftp`, `rsync`, `kinit`, `sudo`, `su` |
-| `log-session.sh` | UserPromptSubmit + Stop | Session usage log (see below) |
+| `log-session.sh` | UserPromptSubmit + Stop + SessionEnd | Session usage log (see below) |
 
 Blocking is a heuristic guard rail, not a hard sandbox. The `permissions.deny`
 rules in `settings.json` add a second layer (Claude Code's own permission
