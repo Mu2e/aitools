@@ -56,6 +56,8 @@ To switch to or update the LiteLLM backend later:
 
 To use a claude.ai subscription instead, skip the key prompt during setup (option 3)
 then run `claude` and type `/login` at the prompt.
+If you used litellm or an API key before, remove `$CLAUDE_HOME/.env` first:
+an `ANTHROPIC_API_KEY` there takes precedence over the subscription login.
 
 ## Sync MCP servers
 

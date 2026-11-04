@@ -148,7 +148,7 @@ _has_backend() {
   # Returns 0 if any usable backend is already configured:
   #   - API key / base URL in env or .env file
   #   - apiKeyHelper in settings.json
-  #   - claude.ai OAuth credentials (written by `claude /login`)
+  #   - claude.ai OAuth credentials (written by /login inside claude)
   [[ -n "${ANTHROPIC_API_KEY:-}" ]] && return 0
   if [[ -f "$env_file" ]]; then
     grep -q "ANTHROPIC_API_KEY\|ANTHROPIC_BASE_URL" "$env_file" 2>/dev/null && return 0
@@ -160,13 +160,9 @@ d = json.load(open('$settings_file'))
 sys.exit(0 if 'apiKeyHelper' in d else 1)
 " 2>/dev/null && return 0
   fi
-  # OAuth credentials from `claude /login` live in ~/.claude/ as session
-  # tokens managed entirely by Claude Code -- we can't easily inspect them,
-  # but their presence means login has happened.
-  if find "$CLAUDE_HOME/.claude" -name "*.json" -not -path "*/backups/*" \
-       -newer "$CLAUDE_HOME/.claude/settings.json" 2>/dev/null | grep -q .; then
-    return 0
-  fi
+  # claude.ai subscription: `/login` stores its OAuth credentials in
+  # ~/.claude/.credentials.json on Linux.
+  [[ -s "$CLAUDE_HOME/.claude/.credentials.json" ]] && return 0
   return 1
 }
 
@@ -207,6 +203,8 @@ if ! _has_backend; then
       echo "  ./setup-litellm.sh          configure litellm.fnal.gov"
       echo "  ./setup.sh                  re-run this prompt"
       echo "  claude, then type /login    sign in with a claude.ai subscription"
+      echo "                              (an ANTHROPIC_API_KEY in $env_file would"
+      echo "                              take precedence -- remove that file first)"
       ;;
   esac
   unset _choice
