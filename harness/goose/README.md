@@ -56,9 +56,12 @@ MCP servers are synced automatically on install. Re-run only if the registry has
 
 ### Session usage log
 
-Token counts, model, and tool usage are automatically logged after every turn to
-`/exp/mu2e/app/users/$USER/goose/log/usage.jsonl` (one line per session, updated live).
-Set `LOG_PRIVACY=1` to omit user-identifying fields.
+Token counts, model, and tool usage are logged after every turn to
+`/exp/mu2e/app/users/$USER/goose/data/goose/log/usage.jsonl` (one line per
+session, updated live). Records have the columns of the shared table
+`usage.sessions` (`../usage/sessions.sql`), the same shape the Slack bot and
+the claude-code harness write: counts, timings, model and tool names only --
+no user, session name, working directory or content.
 
 ### Optional: local tracing (OpenTelemetry → Jaeger)
 
@@ -92,4 +95,6 @@ ssh -L 16686:localhost:16686 <this-host>
 | `setup-litellm.sh` | Switch to the litellm.fnal.gov endpoint |
 | `config.yaml.example` | Tracked config template (live config stays outside this repo) |
 | `log-session.py` | Log session usage from goose's SQLite → jsonl or PostgreSQL |
+| `../shared/mikey-token.sh` | MIKEY token lookup for MCP sync (env → personal file → `getMu2eKey`) |
+| `../shared/getMu2eKey` | Vendored copy of the CVMFS `getMu2eKey` (fallback when CVMFS is absent) |
 | `guardrails-plugin/` | goose plugin: guardrails, session banner (⚛ mu2eai), usage logging |
