@@ -3,8 +3,8 @@ name: setting-up-pyutils
 description: Install and configure the Mu2e pyutils library, verify the installation, and create your first working processor. Use when you need to set up pyutils for the first time or troubleshoot installation issues.
 compatibility: Requires mu2einit, Python 3.7+, git access to github.com/Mu2e/pyutils
 metadata:
-  version: "1.0.0"
-  last-updated: "2026-04-27"
+  version: "1.1.0"
+  last-updated: "2026-10-14"
 ---
 
 # Setting Up Pyutils
@@ -26,7 +26,9 @@ Key outcomes:
 
 ### Clone the Repository
 
-Start by cloning the pyutils repository from GitHub:
+pyutils is already installed in the Mu2e Python environment (`pyenv ana`, see Environment
+Setup); clone and install it only to develop pyutils itself. Start by cloning the pyutils
+repository from GitHub:
 
 ```bash
 cd ~/src  # or your preferred development directory
@@ -39,8 +41,8 @@ cd pyutils
 Install pyutils and its dependencies in development mode:
 
 ```bash
-# Option 1: Using pip (recommended for development)
-pip install -e .
+# Option 1: Using pip inside pyenv ana (recommended for development, per the pyutils README)
+pip install -e . --user
 
 # Option 2: Using setup.py directly
 python setup.py develop
@@ -55,11 +57,13 @@ pip install -e .
 The preferred way to set up the environment for working with pyutils is using the standard Mu2e python environment:
 
 ```bash
-mu2einit
-pyenv ana
+mu2einit       # alias; in non-interactive shells use: source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh
+pyenv ana      # analysis stack including pyutils
+pyenv rootana  # instead of pyenv ana, if you also need ROOT for PyROOT
 ```
 
-This ensures ROOT, art modules, and other Mu2e dependencies are available alongside pyutils.
+`pyenv ana` provides uproot, awkward and the rest of the analysis stack alongside pyutils;
+use `pyenv rootana` when you need PyROOT.
 
 ### Verify Installation
 
@@ -388,9 +392,9 @@ sam_getFileLocations "dh experiment=mu2e and dataset_name=my-dataset" > my_file_
 # Verify installation
 python -c "import pyutils; print(pyutils.__file__)"
 
-# If not found, reinstall
+# If not found: run pyenv ana first; for a development checkout, reinstall
 cd ~/src/pyutils
-pip install -e .
+pip install -e . --user
 
 # Verify again
 python -c "from pyutils.pyprocess import Skeleton; print('OK')"
