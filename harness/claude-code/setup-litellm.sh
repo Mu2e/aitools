@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+# Configure Claude Code to use the litellm.fnal.gov shared endpoint.
+#
+# Checked before `set -euo pipefail` -- sourcing this from setup.sh means we
+# must not set -e at the top level (it would leak into the caller's shell).
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+  echo "Error: run this script, don't source it. Use: ./setup-litellm.sh" >&2
+  return 1 2>/dev/null || exit 1
+fi
+
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage:
+  ./setup-litellm.sh [--model NAME] [--list-models]
+
+Configures Claude Code to call litellm.fnal.gov (the Fermilab shared LLM
+proxy) instead of Anthropic's API directly.
+
+litellm.fnal.gov exposes an Anthropic-compatible proxy at /anthropic, so
+Claude Code needs no special plugin -- just ANTHROPIC_BASE_URL and your
+personal litellm.fnal.gov API key (get one at https://litellm.fnal.gov).
+
+The API key is sourced (in order) from:
+  1. $LITELLM_KEY env var (if already set in this shell)
+  2. $CLAUDE_HOME/litellm_key file (saved by a prior run, private 0600)
+  3. Interactive prompt (input hidden -- never passed as a CLI argument,
+     which would be visible to other users via `ps`)
+
+Options:
+  --model NAME     Force NAME as the default model (writes ANTHROPIC_MODEL,
+                   which overrides the default saved by /model). Without it,
+                   pick models inside claude with /model.
+  --list-models    List available models then exit
+  -h, --help       Show this help
+USAGE
+  exit 2
+}
+
+model=""
+list_only=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --model) model="${2:-}"; shift 2 ;;
+    --list-models) list_only=1; shift ;;
+    -h|--help) usage ;;
+    *) echo "Error: unknown argument '$1'" >&2; usage ;;
+  esac
+done
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/env.sh"
+
+host="https://litellm.fnal.gov"
+anthropic_proxy="$host"  # Claude Code appends /v1/messages itself
+key_file="$CLAUDE_HOME/litellm_key"
+env_file="$CLAUDE_HOME/.env"
+
+# ---------------------------------------------------------------------------
+# Resolve LiteLLM API key
+# (same precedence order as goose's litellm_ensure_key.sh)
+# ---------------------------------------------------------------------------
+
+if [[ -z "${LITELLM_KEY:-}" && -f "$key_file" ]]; then
+  LITELLM_KEY="$(cat "$key_file")"
+  echo "Using previously-saved litellm.fnal.gov API key." >&2
+fi
+
+if [[ -z "${LITELLM_KEY:-}" ]]; then
+  echo "" >&2
+  echo "Get your personal API key at: https://litellm.fnal.gov" >&2
+  echo "" >&2
+  read -rsp "litellm.fnal.gov API key: " LITELLM_KEY
+  echo "" >&2
+fi
+
+if [[ -z "${LITELLM_KEY:-}" ]]; then
+  echo "Error: no key entered." >&2
+  exit 1
+fi
+
+# Save for future use (mode 0600 -- never readable by other users).
+( umask 077 && printf '%s\n' "$LITELLM_KEY" > "$key_file" )
+echo "Key saved to $key_file"
+
+# ---------------------------------------------------------------------------
+# List / auto-detect model
+# ---------------------------------------------------------------------------
+
+echo "Querying available models on litellm.fnal.gov..." >&2
+models_json="$(curl -fsSL \
+  -H "Authorization: Bearer $LITELLM_KEY" \
+  "$host/v1/models" 2>/dev/null || echo '{}')"
+
+if [[ "$list_only" == "1" ]]; then
+  echo "Available models on litellm.fnal.gov:"
+  printf '%s' "$models_json" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for m in d.get('data', []):
+    print(f\"  {m.get('id')}\")
+"
+  exit 0
+fi
+
+# Map Claude Code's model aliases (opus/sonnet/haiku/fable -- what /model
+# and subagents use) to the newest matching name litellm actually serves,
+# e.g. sonnet -> azure/claude-sonnet-5-5. Without this, /model sends bare
+# Anthropic IDs like claude-sonnet-5-5, which litellm rejects with a 400.
+alias_env="$(printf '%s' "$models_json" | python3 -c "
+import json, re, sys
+ids = [m.get('id', '') for m in json.load(sys.stdin).get('data', [])]
+pat = re.compile(r'^(?:.*/)?claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d+))?$')
+best = {}
+for i in ids:
+    m = pat.match(i)
+    if not m:
+        continue  # skips dated snapshots etc.
+    fam, major, minor = m.group(1), int(m.group(2)), int(m.group(3) or 0)
+    if fam not in best or (major, minor) > best[fam][0]:
+        best[fam] = ((major, minor), i)
+for fam, (_, i) in sorted(best.items()):
+    print(f'{fam.upper()}={i}')
+" 2>/dev/null || true)"
+
+if [[ -z "$alias_env" ]]; then
+  echo "Warning: no Claude models found on litellm.fnal.gov -- /model aliases" >&2
+  echo "  won't resolve. ./setup-litellm.sh --list-models to see what's there." >&2
+fi
+
+# ---------------------------------------------------------------------------
+# Write $CLAUDE_HOME/.env (sourced by env.sh on every claude invocation)
+# ---------------------------------------------------------------------------
+
+( umask 077
+cat >| "$env_file" <<ENV
+# Claude Code harness -- litellm.fnal.gov backend
+# Generated by setup-litellm.sh on $(date -u '+%Y-%m-%dT%H:%M:%SZ')
+# Edit manually or re-run setup-litellm.sh to update key or model.
+
+# litellm.fnal.gov exposes an Anthropic-compatible API at /anthropic.
+export ANTHROPIC_BASE_URL="$anthropic_proxy"
+
+# Your personal litellm.fnal.gov API key.
+# Claude Code uses ANTHROPIC_API_KEY as the Bearer token for the proxy.
+export ANTHROPIC_API_KEY="$LITELLM_KEY"
+
+$(if [[ -n "$model" ]]; then
+  printf '# Forced default model (from --model). Overrides the /model default;\n'
+  printf '# remove this line to let /model choose again.\n'
+  printf 'export ANTHROPIC_MODEL="%s"\n' "$model"
+else
+  printf '# No ANTHROPIC_MODEL: choose and save the default with /model in claude.\n'
+fi)
+
+# What Claude Code's aliases (/model opus|sonnet|haiku|fable, subagents,
+# background tasks) resolve to on litellm. Regenerated by setup-litellm.sh.
+$(printf '%s\n' "$alias_env" | sed -n 's/^\([A-Z]*\)=\(.*\)$/export ANTHROPIC_DEFAULT_\1_MODEL="\2"/p')
+ENV
+)
+
+echo ""
+echo "Configured:"
+echo "  Endpoint : $anthropic_proxy"
+[[ -n "$model" ]] && echo "  Default  : $model (forced via --model)"
+while IFS='=' read -r _fam _id; do
+  [[ -n "$_fam" ]] && printf '  %-9s: %s\n' "${_fam,,}" "$_id"
+done <<< "$alias_env"
+unset _fam _id
+echo "  Env file : $env_file"
+echo ""
+echo "Claude Code will use litellm.fnal.gov on the next invocation."
+echo "To switch model: /model inside claude"
+echo "To update key:   ./setup-litellm.sh   (re-prompts if key file is removed)"

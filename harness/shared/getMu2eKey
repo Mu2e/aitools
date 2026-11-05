@@ -1,0 +1,41 @@
+#! /bin/bash
+#
+# Vendored copy of /cvmfs/mu2e.opensciencegrid.org/bin/getMu2eKey, for hosts
+# without CVMFS. harness/shared/mikey-token.sh prefers the CVMFS original
+# when present, so keep this in sync with it rather than editing here.
+#
+# cat the generic mu2e mikey key for use in mcp's
+#
+KEYFILE="/exp/mu2e/app/users/mu2eai/mcp/mikey/key_mu2e"
+if [ -r "$KEYFILE" ] && [ -s "$KEYFILE" ]; then
+   cat "$KEYFILE"
+   exit 0
+fi
+if command -v klist >& /dev/null ; then
+   if klist -s ; then
+     # short name works on site, the fqdn is needed off site - try both,
+     # since a stock known_hosts will only have one of the two
+     key=
+     for node in mu2egpvm01 mu2egpvm02 mu2egpvm03 ; do
+        for host in "$node" "$node.fnal.gov" ; do
+           key=$( ssh -o BatchMode=yes -o ConnectTimeout=10 \
+                      -o GSSAPIAuthentication=yes -n \
+                      "$host" "cat '$KEYFILE'" 2>/dev/null ) \
+              && [ -n "$key" ] && break 2
+        done
+     done
+     if [ -n "$key" ] ; then
+        printf '%s\n' "$key"
+        exit 0
+     fi
+     echo "kerberos ok but could not read the key from any mu2egpvm" >&2
+     echo "   try by hand to see why:  ssh mu2egpvm01.fnal.gov \"cat $KEYFILE\"" >&2
+     exit 1
+   else
+      echo "key is not local and no kerberos ticket to go get it" >&2
+      exit 1
+   fi
+else
+    echo "key file is not local and no kerberos to go get it" >&2
+    exit 1
+fi
