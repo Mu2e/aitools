@@ -154,7 +154,10 @@ _has_backend() {
   #   - API key / base URL in env or .env file
   #   - apiKeyHelper in settings.json
   #   - claude.ai OAuth credentials (written by /login inside claude)
-  [[ -n "${ANTHROPIC_API_KEY:-}" ]] && return 0
+  # Not $ANTHROPIC_API_KEY from the shell alone: after reinstalling, it is
+  # often a leftover from the previous install's .env (env.sh exports it),
+  # and nothing would be saved for the next shell. That case is handled
+  # below.
   if [[ -f "$env_file" ]]; then
     grep -q "ANTHROPIC_API_KEY\|ANTHROPIC_BASE_URL" "$env_file" 2>/dev/null && return 0
   fi
@@ -170,6 +173,15 @@ sys.exit(0 if 'apiKeyHelper' in d else 1)
   [[ -s "$CLAUDE_HOME/.claude/.credentials.json" ]] && return 0
   return 1
 }
+
+if ! _has_backend && [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+  echo ""
+  echo "Note: ANTHROPIC_API_KEY is set in this shell${ANTHROPIC_BASE_URL:+ (for $ANTHROPIC_BASE_URL)},"
+  echo "but not saved in $env_file -- probably left over from an earlier"
+  echo "install, and gone in a new shell. Choose a backend below to save one."
+  [[ "${ANTHROPIC_BASE_URL:-}" == *litellm.fnal.gov* ]] && _leftover_litellm_key="$ANTHROPIC_API_KEY"
+  unset ANTHROPIC_API_KEY ANTHROPIC_BASE_URL
+fi
 
 if ! _has_backend; then
   echo ""
@@ -187,7 +199,8 @@ if ! _has_backend; then
 
   case "${_choice:-1}" in
     1)
-      bash "$script_dir/setup-litellm.sh"
+      # A litellm key left in the shell is reused (and saved) instead of asked for.
+      LITELLM_KEY="${_leftover_litellm_key:-}" bash "$script_dir/setup-litellm.sh"
       ;;
     2)
       echo ""
@@ -212,7 +225,7 @@ if ! _has_backend; then
       echo "                              take precedence -- remove that file first)"
       ;;
   esac
-  unset _choice
+  unset _choice _leftover_litellm_key
   # env.sh loaded .env before it existed; load the new backend settings now
   # so `claude` works in this shell right away (when sourced).
   if [[ -f "$env_file" ]]; then
