@@ -63,26 +63,47 @@ env_file="$CLAUDE_HOME/.env"
 # (same precedence order as goose's litellm_ensure_key.sh)
 # ---------------------------------------------------------------------------
 
+key_from="shell"
 if [[ -z "${LITELLM_KEY:-}" && -f "$key_file" ]]; then
   LITELLM_KEY="$(cat "$key_file")"
-  echo "Using previously-saved litellm.fnal.gov API key." >&2
+  key_from="saved"
 fi
 
-if [[ -z "${LITELLM_KEY:-}" ]]; then
-  echo "" >&2
-  echo "Get your personal API key at: https://litellm.fnal.gov" >&2
-  echo "" >&2
-  read -rsp "litellm.fnal.gov API key: " LITELLM_KEY
-  echo "" >&2
-fi
-
-if [[ -z "${LITELLM_KEY:-}" ]]; then
-  echo "Error: no key entered." >&2
-  exit 1
-fi
+# Every key is checked against litellm: one it rejects (expired, revoked,
+# mistyped) is reported and another asked for, until one works or the
+# input is empty. Any other answer (e.g. no network) keeps the key.
+while :; do
+  if [[ -z "${LITELLM_KEY:-}" ]]; then
+    echo "" >&2
+    echo "Get your personal API key at: https://litellm.fnal.gov" >&2
+    echo "" >&2
+    read -rsp "litellm.fnal.gov API key (Enter to give up): " LITELLM_KEY || true
+    echo "" >&2
+    key_from="entered"
+    if [[ -z "${LITELLM_KEY:-}" ]]; then
+      echo "Error: no key entered." >&2
+      exit 1
+    fi
+  fi
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -m 10 "$host/v1/models" \
+          -H "Authorization: Bearer $LITELLM_KEY" 2>/dev/null)"
+  if [[ "$code" != "401" ]]; then
+    case "$key_from" in
+      saved)   echo "Using previously-saved litellm.fnal.gov API key." >&2 ;;
+      entered) echo "Key accepted." >&2 ;;
+    esac
+    break
+  fi
+  case "$key_from" in
+    saved)   echo "The saved litellm.fnal.gov key was rejected (expired or revoked)." >&2 ;;
+    entered) echo "litellm.fnal.gov rejected that key -- try again." >&2 ;;
+    *)       echo "litellm.fnal.gov rejected the key from your previous setup (expired or revoked)." >&2 ;;
+  esac
+  LITELLM_KEY=""
+done
 
 # Save for future use (mode 0600 -- never readable by other users).
-( umask 077 && printf '%s\n' "$LITELLM_KEY" > "$key_file" )
+( umask 077 && printf '%s\n' "$LITELLM_KEY" >| "$key_file" )
 echo "Key saved to $key_file"
 
 # ---------------------------------------------------------------------------
