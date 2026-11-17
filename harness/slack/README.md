@@ -123,13 +123,18 @@ Then invite the bot to its channel: `/invite @mu2e-ai`.
 ## Install
 
 ```bash
-./scripts/install.sh /exp/mu2e/app/home/mu2eai/slack/deploy v0.1.0
+./scripts/install.sh --with-slack-mcp /exp/mu2e/app/users/mu2eai/slack v0.1.0
 ```
+
+`--with-slack-mcp` installs the Slack MCP server into the same venv; the
+production unit spawns it with `--stdio-server slack=slack-mcp-stdio`. An
+upgrade is the same command with the new ref, then `systemctl --user restart
+mu2e-slack-bot`: the env file and the unit stay where they are.
 
 Then, as the service account:
 
 ```bash
-deploy=/exp/mu2e/app/home/mu2eai/slack/deploy
+deploy=/exp/mu2e/app/users/mu2eai/slack
 cp $deploy/current/.venv/share/mu2e-slack-bot/mu2e-slack-bot.env.example $deploy/mu2e-slack-bot.env
 $EDITOR $deploy/mu2e-slack-bot.env && chmod 600 $deploy/mu2e-slack-bot.env
 
