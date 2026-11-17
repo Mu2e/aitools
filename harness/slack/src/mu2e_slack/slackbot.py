@@ -46,6 +46,9 @@ from .backend import Backend, Conversation
 
 log = logging.getLogger(__name__)
 
+# Images posted per turn; more are logged, not posted.
+MAX_SLACK_IMAGES = 6
+
 # Rotated at random purely so the channel does not feel like a cron job. All
 # standard Slack aliases -- a name this workspace does not have simply fails the
 # reactions.add call, which is already best-effort.
@@ -64,6 +67,7 @@ class SlackBot:
 
     def __init__(self, cfg, backend: Backend):
         self.cfg = cfg
+        self._images_disabled = False  # set when files:write is missing
         self.backend = backend
         self.web = AsyncWebClient(token=cfg.slack_bot_token)
         self.socket = SocketModeClient(app_token=cfg.slack_app_token, web_client=self.web)
@@ -296,6 +300,7 @@ class SlackBot:
                     answer = await conv.ask(text, on_tool=status)
                     await status.finish()
                     await self._post(channel, thread_ts, answer)
+                    await self._post_images(channel, thread_ts, getattr(conv, "turn_images", None))
                 # File and database I/O: off the event loop.
                 await asyncio.to_thread(usage_log.record_turn, conv, self.cfg, channel, thread_ts)
         except Exception as exc:
@@ -364,6 +369,31 @@ class SlackBot:
                 log.error("chat_postMessage to %s failed: %s", channel,
                           exc.response.get("error", exc))
                 raise
+
+    async def _post_images(self, channel: str, thread_ts: str, images) -> None:
+        """Upload the images the tools returned this turn to the thread.
+
+        Needs the files:write scope. Best effort: the answer is already
+        posted, and a missing scope is logged once rather than failing turns.
+        """
+        if not images or not getattr(self.cfg, "post_images", True) or self._images_disabled:
+            return
+        for image in images[:MAX_SLACK_IMAGES]:
+            try:
+                await self.web.files_upload_v2(
+                    channel=channel, thread_ts=thread_ts,
+                    content=image.data, filename=image.name, title=image.name,
+                )
+            except SlackApiError as exc:
+                error = exc.response.get("error", exc)
+                if error in ("missing_scope", "not_allowed_token_type"):
+                    log.error("Cannot post images: the Slack app lacks files:write (%s); "
+                              "add the scope and reinstall the app (SLACK_APP.md)", error)
+                    self._images_disabled = True
+                    return
+                log.warning("Posting image %s to %s failed: %s", image.name, channel, error)
+        if len(images) > MAX_SLACK_IMAGES:
+            log.info("Posted %d of %d images to %s", MAX_SLACK_IMAGES, len(images), channel)
 
     async def _react(self, channel: str, ts: str, emoji: str, remove: bool = False) -> None:
         """Progress feedback. Best effort -- it needs the reactions:write scope,

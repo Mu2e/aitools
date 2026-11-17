@@ -37,6 +37,15 @@ into `<deploy-root>/releases/<ref>/.venv`, a `current` symlink, and a
   the bot to those channels (plus the home channel): mentions anywhere else
   are dropped. Empty (default) = any channel it has been invited to. DMs are
   governed by `--no-dm` only.
+- **Images.** An image a tool returns (`kb_get_image`) is uploaded to the
+  thread after the answer (needs the `files:write` scope; without it the
+  answer still posts and the bot logs it once) and shown to the model as an
+  image block, so it can read the figure. A model that refuses images (a
+  text-only one such as gpt-oss) gets a note instead, for the rest of the
+  thread. The model never gets the image as base64 text. Up to 6 images per
+  turn are posted and 4 (of at most 3.5 MB) shown to the model.
+  `--no-post-images` / `MU2E_SLACK_POST_IMAGES=0` and `--no-vision` /
+  `MU2E_SLACK_VISION=0` turn either off.
 - **One thread, one conversation.** Thread state lives in memory and is
   dropped after `--idle-timeout`. The durable artifact is the usage record,
   not the transcript.

@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from .mcp_tools import ToolRegistry
+from .mcp_tools import ToolImage, ToolRegistry
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +33,13 @@ COMPACT_TRIGGER = 0.8  # fraction of the context budget that forces a compaction
 # system prompt changes per request (the time of day rides on each user
 # message instead). Reads cost ~0.1x input, writes ~1.25x.
 CACHE_MARK = {"type": "ephemeral"}
+
+# Images shown to the model per turn, and the largest one it gets: hosted vision
+# APIs refuse payloads over ~5 MB, and every image stays in the thread's history
+# (sent again with each later request). Slack gets all of them regardless.
+MAX_VISION_IMAGES = 4
+MAX_VISION_BYTES = 3_500_000
+_NO_VISION_NOTE = "[image not shown to the model: it does not accept images; the user sees it in the thread]"
 
 COMPACT_INSTRUCTION = (
     "Summarize the conversation so far for your own future reference. Keep the "
@@ -74,6 +81,11 @@ class Conversation:
         self.updated_at = self.created_at
         self.last_prompt_tokens = 0
         self.tool_notifications = cfg.tool_notifications
+        # Images the tools returned in the current turn; the Slack side posts them.
+        self.turn_images: list[ToolImage] = []
+        # Show them to the model too (vision); turned off for the thread when
+        # its model rejects an image block, so a text-only model keeps working.
+        self.vision = bool(getattr(cfg, "vision_tool_images", True))
         self.lock = asyncio.Lock()
         self.last_active = time.monotonic()
 
@@ -105,6 +117,7 @@ class Conversation:
         # Reset per turn, not per conversation: asking the same question again
         # later is legitimate, repeating a call inside one turn is not.
         attempted: set[str] = set()
+        self.turn_images = []
 
         for _ in range(self.cfg.max_tool_iterations):
             message = await self._complete()
@@ -114,8 +127,12 @@ class Conversation:
                 await self._maybe_compact()
                 return message.get("content") or "(no answer)"
 
+            new_images: list[ToolImage] = []
             for call in tool_calls:
-                await self._run_tool(call, on_tool, attempted)
+                await self._run_tool(call, on_tool, attempted, new_images)
+            # After all the tool results: the API wants every tool answer to
+            # follow its call directly, and tool messages can only carry text.
+            self._show_images(new_images)
 
         # Ran out of tool budget. Everything gathered so far is still in
         # self.messages, so a follow-up question can continue from here.
@@ -132,29 +149,77 @@ class Conversation:
             return "claude" in self.model.lower()
         return mode == "on"
 
-    def _request(self) -> tuple[list[dict], list[dict]]:
-        """Messages and tools for one model call, with cache markers when
-        caching is on. Marks go on copies: self.messages stays plain, so the
-        history is the same whichever model reads it next."""
-        system = self._system_prompt()
-        messages = [system] + self.messages
-        schemas = self.tools.schemas
-        if not self._caching():
-            return messages, schemas
-        if schemas:
-            schemas = schemas[:-1] + [{**schemas[-1], "cache_control": CACHE_MARK}]
-        messages = [_marked(system)] + self.messages[:-1] + [_marked(self.messages[-1])]
-        return messages, schemas
-
-    async def _complete(self) -> dict:
+    async def _create(self):
         messages, schemas = self._request()
-        response = await self.client.chat.completions.create(
+        return await self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             tools=schemas or None,
             temperature=self.cfg.temperature,
             max_tokens=self.cfg.max_tokens,
         )
+
+    def _request(self) -> tuple[list[dict], list[dict]]:
+        """Messages and tools for one model call, with cache markers when
+        caching is on. Marks go on copies: self.messages stays plain, so the
+        history is the same whichever model reads it next."""
+        system = self._system_prompt()
+        plain = self._plain_messages()
+        messages = [system] + plain
+        schemas = self.tools.schemas
+        if not self._caching():
+            return messages, schemas
+        if schemas:
+            schemas = schemas[:-1] + [{**schemas[-1], "cache_control": CACHE_MARK}]
+        messages = [_marked(system)] + plain[:-1] + [_marked(plain[-1])]
+        return messages, schemas
+
+    def _show_images(self, images: "list[ToolImage]") -> None:
+        """Give a vision model the images the last tool calls returned."""
+        if not (self.vision and images):
+            return
+        shown = [i for i in images if len(i.data) <= MAX_VISION_BYTES][:MAX_VISION_IMAGES]
+        if not shown:
+            return
+        names = ", ".join(i.name for i in shown)
+        blocks: list[dict] = [{"type": "text", "text": f"The images the tool returned ({names}):"}]
+        blocks += [{"type": "image_url", "image_url": {"url": i.data_url}} for i in shown]
+        self.messages.append({"role": "user", "content": blocks, "tool_images": True})
+
+    def _plain_messages(self, without_images: bool = False) -> list[dict]:
+        """The history as the API takes it: without our "tool_images" marker,
+        and with the image blocks replaced by a note when ``without_images``."""
+        out = []
+        for m in self.messages:
+            if "tool_images" not in m:
+                out.append(m)
+            elif without_images:
+                out.append({"role": "user", "content": "[images were shown here]"})
+            else:
+                out.append({k: v for k, v in m.items() if k != "tool_images"})
+        return out
+
+    def _drop_images(self) -> bool:
+        """Replace the image blocks in the history by a note; True if any were there."""
+        dropped = False
+        for i, m in enumerate(self.messages):
+            if m.get("tool_images"):
+                self.messages[i] = {"role": "user", "content": _NO_VISION_NOTE}
+                dropped = True
+        return dropped
+
+    async def _complete(self) -> dict:
+        try:
+            response = await self._create()
+        except Exception as exc:
+            # A text-only model (gpt-oss on vLLM) rejects image blocks with a
+            # 400. Drop them, keep the thread going without vision.
+            if not (_is_bad_request(exc) and self._drop_images()):
+                raise
+            log.warning("model %s rejected an image (%s); continuing without vision in %s",
+                        self.model, str(exc)[:120], self.key)
+            self.vision = False
+            response = await self._create()
         self._account(response)
 
         choice = response.choices[0].message
@@ -176,7 +241,8 @@ class Conversation:
         self.last_active = time.monotonic()
         return message
 
-    async def _run_tool(self, call: dict, on_tool, attempted: set[str]) -> None:
+    async def _run_tool(self, call: dict, on_tool, attempted: set[str],
+                        images: "list[ToolImage] | None" = None) -> None:
         name = call["function"]["name"]
         raw_args = call["function"]["arguments"] or "{}"
         try:
@@ -204,7 +270,11 @@ class Conversation:
             self.usage.tool_breakdown[name] = self.usage.tool_breakdown.get(name, 0) + 1
             if on_tool is not None:
                 await on_tool(name, arguments)
-            result = await self.tools.call(name, arguments)
+            found: list[ToolImage] = []
+            result = await self.tools.call(name, arguments, images=found)
+            self.turn_images.extend(found)
+            if images is not None:
+                images.extend(found)
 
         self.messages.append({
             "role": "tool",
@@ -247,7 +317,8 @@ class Conversation:
 
         response = await self.client.chat.completions.create(
             model=self.model,
-            messages=[self._system_prompt()] + self.messages + [
+            # A summary needs no pixels.
+            messages=[self._system_prompt()] + self._plain_messages(without_images=True) + [
                 {"role": "user", "content": COMPACT_INSTRUCTION}
             ],
             temperature=0.0,
@@ -312,3 +383,8 @@ def _marked(message: dict) -> dict:
         return message
     blocks[-1] = {**blocks[-1], "cache_control": CACHE_MARK}
     return {**message, "content": blocks}
+
+
+def _is_bad_request(exc: BaseException) -> bool:
+    """An HTTP 400 from the model endpoint (openai.BadRequestError or alike)."""
+    return getattr(exc, "status_code", None) == 400 or type(exc).__name__ == "BadRequestError"

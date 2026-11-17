@@ -47,7 +47,8 @@ Apps* → the app (e.g. `mu2eshifterbot`). In the left sidebar:
 | **Show author names** (resolve `<@U…>` to people) | `users:read` | — | Used by the chat bot's context and by `slack-mcp`'s message formatting. |
 | **Read channel history** (`slack-mcp`: `slack_read_channel`, `slack_read_thread`) | `channels:history`, `channels:read`, `users:read`; private channels: `groups:history`, `groups:read` | — (polling API, no events) | The bot must be a **member** of each allowlisted channel — `conversations.list` shows public channels it is not in, but `conversations.history` then fails with `not_in_channel`. |
 | **Post reports** (e.g. watchdog → channel) | `chat:write` | — | Membership required. `chat:write.customize` only if posting under a different name/icon. |
-| **Attach/read files** | `files:read` / `files:write` | — | Not used by anything yet. |
+| **Show tool images** (e.g. a figure from `kb_get_image`, uploaded to the thread) | `files:write` | — | Without it the answer still posts and the bot logs once that the scope is missing. `--no-post-images` / `MU2E_SLACK_POST_IMAGES=0` turns it off. |
+| **Read files** | `files:read` | — | Not used by anything yet. |
 | **Workspace search** | — | — | Needs a *user* token (`search:read`); deliberately not supported anywhere here. |
 
 ## Our deployments
