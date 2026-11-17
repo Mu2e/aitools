@@ -300,7 +300,7 @@ class SlackBot:
                     answer = await conv.ask(text, on_tool=status)
                     await status.finish()
                     await self._post(channel, thread_ts, answer)
-                    await self._post_images(channel, thread_ts, getattr(conv, "turn_images", None))
+                    await self._post_images(channel, thread_ts, getattr(conv, "turn_shown", None))
                 # File and database I/O: off the event loop.
                 await asyncio.to_thread(usage_log.record_turn, conv, self.cfg, channel, thread_ts)
         except Exception as exc:
@@ -371,7 +371,7 @@ class SlackBot:
                 raise
 
     async def _post_images(self, channel: str, thread_ts: str, images) -> None:
-        """Upload the images the tools returned this turn to the thread.
+        """Upload the images the model chose to show this turn (slack__show_image).
 
         Needs the files:write scope. Best effort: the answer is already
         posted, and a missing scope is logged once rather than failing turns.

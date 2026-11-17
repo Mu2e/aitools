@@ -36,7 +36,7 @@ def test_an_image_goes_to_the_list_not_into_the_text():
     text = _result_text(result, images, {"identifier": "mu2e-docdb/59019",
                                          "image_filename": "59019-sesaps_mu2e_genesis-_page_15_Figure_23.png"})
     assert B64[:40] not in text
-    assert "Figure 23 of DocDB 59019" in text and "posted to the user's Slack thread" in text
+    assert "Figure 23 of DocDB 59019" in text and "[image 59019-sesaps_mu2e_genesis-_page_15_Figure_23.png" in text
     (img,) = images
     assert img.data == PNG and img.mime == "image/png"
     assert img.name == "59019-sesaps_mu2e_genesis-_page_15_Figure_23.png"
@@ -72,7 +72,7 @@ class Tools:
     async def call(self, name, arguments, images=None):
         for data in self._images:
             images.append(ToolImage(data=data, mime="image/png", name="fig.png"))
-        return "[image fig.png: posted to the user's Slack thread]"
+        return "[image fig.png (2 KB, image/png)]"
 
 
 def _response(content="", tool_calls=None):
@@ -112,10 +112,10 @@ class Client:
         return _response("Here is the diagram.")
 
 
-def _conv(client, tools=None, vision=True):
+def _conv(client, tools=None, vision=True, post_images=True):
     cfg = NS(model="azure/claude-sonnet-5-5", prompt_cache="off", command_prefix="!", system_prompt="You help.",
              tool_notifications=True, max_tool_iterations=4, temperature=0.0, max_tokens=100,
-             context_limit=128000, vision_tool_images=vision)
+             context_limit=128000, vision_tool_images=vision, post_images=post_images)
     return Conversation("k", cfg, client=client, tools=tools or Tools(), context={"channel": "C"})
 
 
@@ -227,3 +227,67 @@ def test_switches(monkeypatch):
     monkeypatch.setenv("MU2E_SLACK_VISION", "0")
     cfg, _ = parse_args(["--no-post-images"])
     assert cfg.post_images is False and cfg.vision_tool_images is False
+
+
+# -- the model decides what the user sees (slack__show_image) -----------------
+
+class ScriptedClient:
+    """Plays back a fixed list of replies; records the requests."""
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.sent: list[list[dict]] = []
+        self.tools_sent: list[list[dict]] = []
+        self.chat = NS(completions=NS(create=self._create))
+
+    async def _create(self, **kwargs):
+        self.sent.append(kwargs["messages"])
+        self.tools_sent.append(kwargs.get("tools") or [])
+        return self.replies.pop(0)
+
+
+def _call(name, args, i):
+    return NS(id=i, function=NS(name=name, arguments=json.dumps(args)))
+
+
+def test_the_show_tool_is_offered_only_when_images_are_posted():
+    for post, expected in ((True, True), (False, False)):
+        client = ScriptedClient(_response("hi"))
+        asyncio.run(_conv(client, post_images=post).ask("hello"))
+        names = [t["function"]["name"] for t in client.tools_sent[0]]
+        assert (agent.SHOW_IMAGE_TOOL in names) is expected
+
+
+def test_a_fetched_image_reaches_the_thread_only_when_the_model_shows_it():
+    client = ScriptedClient(
+        _response(tool_calls=[_call("kb__kb_get_image", {"identifier": "fig"}, "c1")]),
+        _response(tool_calls=[_call(agent.SHOW_IMAGE_TOOL, {"names": ["fig.png"]}, "c2")]),
+        _response("Here is the diagram."),
+    )
+    conv = _conv(client)
+    assert asyncio.run(conv.ask("show me the diagram")) == "Here is the diagram."
+    assert [i.name for i in conv.turn_images] == ["fig.png"] and [i.name for i in conv.turn_shown] == ["fig.png"]
+    tool_results = [m["content"] for m in conv.messages if m.get("role") == "tool"]
+    assert agent.SHOW_IMAGE_TOOL in tool_results[0]                     # the hint after the image
+    assert "Will be posted to the thread" in tool_results[1]
+
+
+def test_an_image_the_model_only_looked_at_is_not_posted():
+    client = ScriptedClient(
+        _response(tool_calls=[_call("kb__kb_get_image", {"identifier": "fig"}, "c1")]),
+        _response("The y axis is the momentum in MeV/c."),
+    )
+    conv = _conv(client)
+    asyncio.run(conv.ask("what is on the y axis?"))
+    assert conv.turn_images and conv.turn_shown == []
+
+
+def test_only_this_turns_images_can_be_shown():
+    conv = _conv(ScriptedClient())
+    assert "nothing to show" in conv._show({"names": ["fig.png"]})
+    conv.turn_images = [ToolImage(PNG, "image/png", "fig.png")]
+    out = conv._show({"names": ["other.png", "fig.png", "fig.png"]})
+    assert [i.name for i in conv.turn_shown] == ["fig.png"]
+    assert "other.png" in out and "Available: fig.png" in out
+    assert conv._show({"names": []}).startswith("Error")
+    assert conv._show({"names": "fig.png"}) == "Already marked to be shown."   # a bare string works too

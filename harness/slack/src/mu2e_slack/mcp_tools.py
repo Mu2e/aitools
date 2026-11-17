@@ -353,8 +353,7 @@ def _result_text(result, images: "list[ToolImage] | None" = None, arguments: dic
             name = _image_name(arguments or {}, mime, n_images)
             n_images += 1
             images.append(ToolImage(data=data, mime=mime, name=name))
-            parts.append(f"[image {name} ({len(data) // 1024} KB, {mime}): it is posted to the "
-                         f"user's Slack thread with your answer, so you can refer to it as shown]")
+            parts.append(f"[image {name} ({len(data) // 1024} KB, {mime})]")
             continue
         text = getattr(item, "text", None)
         parts.append(text if text is not None else str(item))

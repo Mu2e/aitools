@@ -37,6 +37,29 @@ CACHE_MARK = {"type": "ephemeral"}
 # Images shown to the model per turn, and the largest one it gets: hosted vision
 # APIs refuse payloads over ~5 MB, and every image stays in the thread's history
 # (sent again with each later request). Slack gets all of them regardless.
+# The bot's own tool for putting an image in front of the user. Images the
+# tools return go to the model; only those it names here reach the thread, and
+# only names from this turn's tool results are accepted.
+SHOW_IMAGE_TOOL = "slack__show_image"
+SHOW_IMAGE_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": SHOW_IMAGE_TOOL,
+        "description": (
+            "Show images to the user: posts them to the Slack thread after your answer. Only images "
+            "a tool returned in this turn (e.g. kb_get_image), by the file name given in its result. "
+            "Use it when the user asked to see an image or it clearly helps the answer; images you "
+            "only looked at yourself need not be shown."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"names": {"type": "array", "items": {"type": "string"},
+                                     "description": "File names of the images to show"}},
+            "required": ["names"],
+        },
+    },
+}
+
 MAX_VISION_IMAGES = 4
 MAX_VISION_BYTES = 3_500_000
 _NO_VISION_NOTE = "[image not shown to the model: it does not accept images; the user sees it in the thread]"
@@ -83,6 +106,9 @@ class Conversation:
         self.tool_notifications = cfg.tool_notifications
         # Images the tools returned in the current turn; the Slack side posts them.
         self.turn_images: list[ToolImage] = []
+        # The ones the model chose to show the user (SHOW_IMAGE_TOOL).
+        self.turn_shown: list[ToolImage] = []
+        self.can_show_images = bool(getattr(cfg, "post_images", True))
         # Show them to the model too (vision); turned off for the thread when
         # its model rejects an image block, so a text-only model keeps working.
         self.vision = bool(getattr(cfg, "vision_tool_images", True))
@@ -118,6 +144,7 @@ class Conversation:
         # later is legitimate, repeating a call inside one turn is not.
         attempted: set[str] = set()
         self.turn_images = []
+        self.turn_shown = []
 
         for _ in range(self.cfg.max_tool_iterations):
             message = await self._complete()
@@ -167,12 +194,40 @@ class Conversation:
         plain = self._plain_messages()
         messages = [system] + plain
         schemas = self.tools.schemas
+        if self.can_show_images:
+            schemas = list(schemas) + [SHOW_IMAGE_SCHEMA]
         if not self._caching():
             return messages, schemas
         if schemas:
             schemas = schemas[:-1] + [{**schemas[-1], "cache_control": CACHE_MARK}]
         messages = [_marked(system)] + plain[:-1] + [_marked(plain[-1])]
         return messages, schemas
+
+    def _show(self, arguments: dict) -> str:
+        """SHOW_IMAGE_TOOL: mark images from this turn's tool results for the thread."""
+        names = arguments.get("names")
+        if isinstance(names, str):
+            names = [names]
+        if not isinstance(names, list) or not names:
+            return "Error: give the file names of the images to show, as names=[...]."
+        available = {i.name: i for i in self.turn_images}
+        if not available:
+            return "No image was returned by a tool in this turn, so there is nothing to show."
+        shown, unknown = [], []
+        for n in names:
+            image = available.get(str(n).strip().rsplit("/", 1)[-1])
+            if image is None:
+                unknown.append(str(n))
+            elif image not in self.turn_shown:
+                self.turn_shown.append(image)
+                shown.append(image.name)
+        parts = []
+        if shown:
+            parts.append(f"Will be posted to the thread after your answer: {', '.join(shown)}.")
+        if unknown:
+            parts.append(f"Not from this turn's tool results, not shown: {', '.join(unknown)}. "
+                         f"Available: {', '.join(available)}.")
+        return " ".join(parts) or "Already marked to be shown."
 
     def _show_images(self, images: "list[ToolImage]") -> None:
         """Give a vision model the images the last tool calls returned."""
@@ -270,11 +325,17 @@ class Conversation:
             self.usage.tool_breakdown[name] = self.usage.tool_breakdown.get(name, 0) + 1
             if on_tool is not None:
                 await on_tool(name, arguments)
-            found: list[ToolImage] = []
-            result = await self.tools.call(name, arguments, images=found)
-            self.turn_images.extend(found)
-            if images is not None:
-                images.extend(found)
+            if name == SHOW_IMAGE_TOOL:
+                result = self._show(arguments)
+            else:
+                found: list[ToolImage] = []
+                result = await self.tools.call(name, arguments, images=found)
+                self.turn_images.extend(found)
+                if images is not None:
+                    images.extend(found)
+                if found and self.can_show_images:
+                    result += (f"\n(To show {'it' if len(found) == 1 else 'them'} to the user, call "
+                               f"{SHOW_IMAGE_TOOL} with the file name; otherwise only you see it.)")
 
         self.messages.append({
             "role": "tool",
