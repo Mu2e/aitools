@@ -148,7 +148,7 @@ for fam, (_, i) in sorted(best.items()):
 
 if [[ -z "$alias_env" ]]; then
   echo "Warning: no Claude models found on litellm.fnal.gov -- /model aliases" >&2
-  echo "  won't resolve. ./setup-litellm.sh --list-models to see what's there." >&2
+  echo "  won't resolve. $script_dir/setup-litellm.sh --list-models shows what's there." >&2
 fi
 
 # ---------------------------------------------------------------------------
@@ -194,4 +194,4 @@ echo "  Env file : $env_file"
 echo ""
 echo "Claude Code will use litellm.fnal.gov on the next invocation."
 echo "To switch model: /model inside claude"
-echo "To update key:   ./setup-litellm.sh   (re-prompts if key file is removed)"
+echo "To update key:   $script_dir/setup-litellm.sh   (re-prompts if key file is removed)"

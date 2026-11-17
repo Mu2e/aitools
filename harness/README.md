@@ -9,6 +9,7 @@ logging -- without filling your home-directory quota.
 |---|---|---|
 | [`claude-code/`](claude-code/README.md) | [Claude Code](https://code.claude.com) on litellm.fnal.gov (or your own Anthropic key / claude.ai subscription) | **most users** |
 | [`goose/`](goose/README.md) | [goose](https://github.com/block/goose) on vllm.fnal.gov, litellm.fnal.gov or ALCF | open models, no key needed for vllm |
+| [`claudebox/`](claudebox/README.md) | Claude Code in a locked-down container: one work directory, no home, no credentials | untrusted input, unattended agents |
 | [`slack/`](slack/README.md) | The `askmu2e` Slack bot (a service, not something you install) | maintainers |
 
 ## Install (Claude Code, on a gpvm)
@@ -48,6 +49,22 @@ Add that line to your `~/.bashrc` if you want it always on.
 For goose, the same with `cd aitools/harness/goose` -- see its
 [README](goose/README.md).
 
+### From a shared copy (CVMFS)
+
+The harness also runs from a read-only copy -- nothing is written next to
+the scripts; everything writable still goes to `/exp/mu2e/app/users/$USER/`.
+Once it is published (see [Deploying](#deploying-a-shared-copy-maintainers)),
+no clone is needed:
+
+```bash
+. <deployed harness>/claude-code/setup.sh     # first time
+. <deployed harness>/claude-code/env.sh       # every new shell
+```
+
+Updates then arrive with each publish, without a `git pull`. If you
+installed from a clone before, run setup once with `--refresh-settings` so
+your hooks point at the shared copy.
+
 ## Note: source, don't run
 
 Always `. setup.sh` / `. env.sh` (with the dot). `./setup.sh` installs, but
@@ -66,10 +83,13 @@ trouble):
 | `goose/` | goose binary, config, sessions, usage log |
 | `claudebox/` | home, runs and work dir of `claudebox` (Claude in a container) |
 
-Inside a session the assistant has no Kerberos ticket and no `~/.ssh`
-(on purpose): it can't `ssh`, `kinit` or `sudo`. Run those yourself.
-For stronger isolation -- only one directory visible at all -- use
-`claudebox` (Claude Code in a container, see
+Inside a session the assistant is pointed away from your Kerberos ticket
+and `~/.ssh` (on purpose), and `ssh`, `kinit`, `sudo` and the like are
+refused. Run those yourself. This keeps the assistant from wandering off
+the machine by accident; it is **not a security boundary** -- the session
+still runs as you, and your ticket and files remain reachable to a process
+that goes looking for them. For real isolation -- only one directory
+visible at all -- use `claudebox` (Claude Code in a container, see
 [claude-code/README.md](claude-code/README.md#sandboxed-claudebox)).
 
 ## Update
@@ -80,7 +100,10 @@ cd harness/claude-code && . setup.sh
 ```
 
 Claude Code itself updates automatically; re-running `setup.sh` picks up
-harness changes and re-syncs the MCP servers.
+harness changes and re-syncs the MCP servers. Your `settings.json` is the
+exception: it is only written on first install. To take over a changed
+template (new hooks or deny rules), or after moving the clone:
+`. setup.sh --refresh-settings` (the old file is kept as a backup).
 
 ## Uninstall
 
@@ -91,6 +114,26 @@ rm -rf /exp/mu2e/app/users/$USER/aitools       # the scripts
 ```
 
 and remove the `env.sh` line from `~/.bashrc` if you added one.
+
+## Deploying a shared copy (maintainers)
+
+```bash
+harness/deploy.sh DEST          # e.g. a directory in a CVMFS transaction
+```
+
+copies the committed claude-code, claudebox and goose harnesses (not the Slack bot)
+to `DEST` and writes `DEST/VERSION` (the commit, which the usage log
+records as `harness_version`). It deploys `HEAD`, not uncommitted changes.
+
+Users' `settings.json` and `~/.claude.json` store absolute paths into the
+harness (hooks, MCP header helper), so publish to a **stable path**. If you
+keep versioned directories, have users source through a fixed link
+(`.../current/claude-code/setup.sh`): the scripts keep the path they were
+sourced by, so the link is what ends up in the settings.
+
+The hooks run straight from the shared copy, so a publish takes effect for
+everyone at once -- including a broken one, and a broken guard-rail hook
+fails open. Check before publishing.
 
 ## What's shared between the harnesses
 

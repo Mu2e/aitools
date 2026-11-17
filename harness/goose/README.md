@@ -81,9 +81,17 @@ no user, session name, working directory or content.
 goose runs with your `$HOME` pointed at `/exp/mu2e/app/users/$USER/goose/home`
 (no `~/.ssh`) and without your Kerberos ticket. The plugin
 `guardrails-plugin/` (linked into that home by `env.sh`) also refuses
-`ssh`, `scp`, `sftp`, `rsync`, `kinit`, `sudo`, `su` -- also behind `env`,
-`timeout`, `sh -c '...'`, `$(...)` -- via `../shared/block_commands.py`, the
-same check the claude-code harness uses. A guard rail, not a sandbox.
+`ssh`, `scp`, `sftp`, `rsync`, `kinit`, `sudo`, `su` -- also on later lines
+of a multi-line command, inside `if`/`for`/`{ }`, behind `env`, `timeout`,
+`sh -c '...'`, `$(...)` -- via `../shared/block_commands.py`, the same check
+the claude-code harness uses.
+
+This is a guard rail, **not a security boundary**: goose runs as you, with
+your Unix permissions. Your real ticket cache (`/tmp/krb5cc_<uid>_*`) and
+home directory still exist and are readable by your processes, so a session
+that deliberately sets `KRB5CCNAME` back, or runs `ssh` from a script it
+wrote, gets past it. It stops accidents and the obvious path, not a
+determined or prompt-injected agent.
 
 When the plugin is active, an interactive session (`mu2eai`) starts with a
 `⚛ mu2eai` banner line (`goose run` doesn't show it). **No banner = no

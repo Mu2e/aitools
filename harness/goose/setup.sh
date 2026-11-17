@@ -70,7 +70,7 @@ fi
 # token yet (see sync_mcp.py) -- rerun sync-mcp.sh by hand once you have one.
 echo "Syncing MCP servers from the registry..."
 if ! bash "$script_dir/sync-mcp.sh"; then
-  echo "Warning: sync-mcp.sh failed -- goose is installed, but MCP servers weren't synced. Run ./sync-mcp.sh by hand once the registry is reachable." >&2
+  echo "Warning: sync-mcp.sh failed -- goose is installed, but MCP servers weren't synced. Run $script_dir/sync-mcp.sh by hand once the registry is reachable." >&2
 fi
 
 unset script_dir

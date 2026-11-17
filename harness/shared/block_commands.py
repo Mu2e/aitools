@@ -9,12 +9,14 @@ the session.
 
 Usage: block_commands.py "<tool name for the message>"
 
-A command name counts when it is in command position -- start of the
+A command name counts when it is in command position -- start of a
 line, after ; | & && || ( or inside $(...) / `...` -- also behind
-assignments (FOO=1 ssh) and wrappers (env, command, exec, nohup, nice,
-time, timeout, setsid, stdbuf, xargs), and inside sh/bash -c '...' and
-eval. Mentions as arguments (grep ssh, git log --grep=su, echo "ssh")
-are not blocked.
+assignments (FOO=1 ssh), shell keywords (then, do, else, {, !, ...) and
+wrappers (env, command, exec, nohup, nice, time, timeout, setsid, stdbuf,
+xargs), and inside sh/bash -c '...', eval, and here-documents or
+here-strings fed to a shell. Mentions as arguments (grep ssh,
+git log --grep=su, echo "ssh") and in other here-document bodies
+(cat <<EOF > notes.md) are not blocked.
 
 Still a heuristic, not a sandbox: the agent runs with the user's Unix
 permissions, and a determined script (python -c, a written-out file)
@@ -40,11 +42,43 @@ OPT_WITH_VALUE = {
     "xargs": {"-I", "-L", "-n", "-P", "-s", "-d", "-E", "-a"},
     "stdbuf": {"-i", "-o", "-e"},
 }
+# Shell keywords after which the next word is still a command.
+KEYWORDS = {"if", "then", "else", "elif", "while", "until", "do", "{", "!"}
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# <<EOF, <<-EOF, <<'EOF', << "EOF" -- but not the here-string <<<.
+HEREDOC = re.compile(r"""(?<!<)<<(-?)\s*(['"]?)(\w+)\2""")
+WORD = re.compile(r"[\w./-]+")
+
+
+def _strip_heredocs(cmd: str) -> str:
+    """Drop here-document bodies: they are data, not commands (a README
+    written with `cat <<EOF` may well mention ssh). Kept when the line
+    feeds a shell (`bash <<EOF`), where the body is what gets run, and
+    when the end marker is missing (then it probably wasn't a heredoc)."""
+    lines = cmd.split("\n")
+    out, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        i += 1
+        to_shell = any(os.path.basename(w) in SHELLS for w in WORD.findall(line))
+        for dash, _, marker in HEREDOC.findall(line):
+            end = next((j for j in range(i, len(lines))
+                        if (lines[j].lstrip("\t") if dash else lines[j]) == marker), None)
+            if end is None:
+                break
+            if to_shell:
+                out.extend(lines[i:end])
+            i = end + 1
+    return "\n".join(out)
 
 
 def _tokens(cmd: str):
-    # Command substitution starts a new command; treat it as a separator.
+    # A newline ends a command (a backslash-newline continues it), and
+    # command substitution starts a new one: treat them as separators.
+    # Inside quotes this stays inside the quoted token, which is what we
+    # want (sh -c "...", eval "..." are tokenized again).
+    cmd = cmd.replace("\\\n", " ").replace("\n", " ; ")
     cmd = cmd.replace("$(", " ; ").replace("`", " ; ")
     lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
     lex.whitespace_split = True
@@ -63,7 +97,7 @@ def find_blocked(cmd: str, depth: int = 0):
     """Name of the first blocked command `cmd` would run, or None."""
     if depth > 5:
         return None
-    toks = _tokens(cmd)
+    toks = _tokens(_strip_heredocs(cmd))
     i, at_cmd = 0, True
     while i < len(toks):
         tok = toks[i]
@@ -77,7 +111,7 @@ def find_blocked(cmd: str, depth: int = 0):
         if not at_cmd:
             i += 1
             continue
-        if ASSIGNMENT.match(tok):
+        if ASSIGNMENT.match(tok) or tok in KEYWORDS:
             i += 1
             continue
         name = os.path.basename(tok)
@@ -94,6 +128,10 @@ def find_blocked(cmd: str, depth: int = 0):
             continue  # still at command position
         if name in SHELLS:
             for j in range(i + 1, len(toks)):
+                if toks[j] == "<<<" and j + 1 < len(toks):  # here-string
+                    hit = find_blocked(toks[j + 1], depth + 1)
+                    if hit:
+                        return hit
                 if _is_operator(toks[j]):
                     break
                 if toks[j].startswith("-") and "c" in toks[j][1:] and j + 1 < len(toks):

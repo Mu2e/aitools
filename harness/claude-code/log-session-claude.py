@@ -195,29 +195,56 @@ def parse_session(jsonl_path: Path) -> dict:
 # ASSEMBLE LOG RECORD
 # ---------------------------------------------------------------------------
 
-def _endpoint_url() -> str:
-    """ANTHROPIC_BASE_URL (env.sh sources it from .env); read .env directly as
-    a fallback so the hook subprocess has it too. Empty means Anthropic's API."""
-    if os.environ.get("ANTHROPIC_BASE_URL"):
-        return os.environ["ANTHROPIC_BASE_URL"]
+def _backend_setting(name: str) -> str:
+    """A backend variable such as ANTHROPIC_BASE_URL: from the environment
+    (claude is started with .env loaded, so the hook inherits it), else read
+    from .env directly. Empty if not set."""
+    if os.environ.get(name):
+        return os.environ[name]
     claude_home = os.environ.get("CLAUDE_HOME") or \
                   f"/exp/mu2e/app/users/{os.environ.get('USER', '')}/claude-code/home"
     env_file = Path(claude_home) / ".env"
     if env_file.exists():
         for line in env_file.read_text().splitlines():
             line = line.strip()
-            if line.startswith("export ANTHROPIC_BASE_URL="):
+            if line.startswith(f"export {name}="):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
     return ""
 
 
+def _provider(endpoint: str) -> str:
+    """The gateway of a custom endpoint ("litellm"); for Anthropic's own API
+    "anthropic" with an API key and "claude.ai" with a subscription login.
+
+    Both of those talk to api.anthropic.com, so they are told apart by the
+    credentials: a key (environment, .env or an apiKeyHelper) takes
+    precedence in Claude Code, so only without one is the OAuth login that
+    /login stores in .claude/.credentials.json what the session ran on."""
+    if endpoint:
+        return usage_record.provider_from_endpoint(endpoint, default="anthropic")
+    if _backend_setting("ANTHROPIC_API_KEY") or _backend_setting("ANTHROPIC_AUTH_TOKEN"):
+        return "anthropic"
+    claude_dir = PROJECTS_ROOT.parent   # .claude/ of the home the session ran in
+    try:
+        if "apiKeyHelper" in json.loads((claude_dir / "settings.json").read_text()):
+            return "anthropic"
+    except (OSError, ValueError):
+        pass
+    try:
+        if (claude_dir / ".credentials.json").stat().st_size > 0:
+            return "claude.ai"
+    except OSError:
+        pass
+    return "anthropic"
+
+
 def build_record(parsed: dict) -> dict:
-    endpoint = _endpoint_url()
+    endpoint = _backend_setting("ANTHROPIC_BASE_URL")
     return usage_record.make_record(
         "claude-code", parsed["session_id"],
         session_created_at=usage_record.utc_iso(parsed["session_created_at"]),
         session_updated_at=usage_record.utc_iso(parsed["session_updated_at"]),
-        provider=usage_record.provider_from_endpoint(endpoint, default="anthropic"),
+        provider=_provider(endpoint),
         endpoint_url=endpoint or "https://api.anthropic.com",
         model=parsed.get("model") or None,
         turns=parsed["turns"],

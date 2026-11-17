@@ -164,4 +164,4 @@ if [[ "$list_only" == "1" ]]; then
 fi
 
 OPENAI_API_KEY_VALUE="$ALCF_TOKEN" python3 "$script_dir/alcf_set_provider.py" set "$config_file" "$base_url" "$model"
-echo "Run './alcf.sh --restore-default' to switch back to the internal vllm default."
+echo "Run '$script_dir/alcf.sh --restore-default' to switch back to the internal vllm default."

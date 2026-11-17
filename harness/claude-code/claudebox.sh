@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Harness front end for the CVMFS claudebox (Claude Code in a locked-down
-# apptainer container). env.sh defines a `claudebox` function that calls
-# this, so with the harness loaded `claudebox ...` gets the Mu2e defaults;
-# `command claudebox` or the full CVMFS path bypasses them.
+# Harness front end for claudebox (Claude Code in a locked-down apptainer
+# container; the script itself is ../claudebox/claudebox). env.sh defines a
+# `claudebox` function that calls this, so with the harness loaded
+# `claudebox ...` gets the Mu2e defaults; running the claudebox script
+# directly bypasses them.
 #
 # For run / agent / shell it adds, before your own options (so yours win):
 #   --claude   the harness's native Claude Code binary
@@ -12,8 +13,8 @@
 #   --mcp      the Mu2e MCP servers from the registry, written with a
 #              literal ${MIKEY_TOKEN} that Claude Code expands inside
 # and it seeds the box home with the Mu2e context (CLAUDE.md) and a Sonnet
-# default. ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL (from the harness .env)
-# are forwarded by claudebox itself. After an interactive `run`, the
+# default. ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL (from the harness .env,
+# loaded below) are forwarded by claudebox itself. After an interactive `run`, the
 # session is added to the harness usage log.
 #
 # Bare `claudebox` (or `claudebox DIR`, `claudebox --opt`) means `run`.
@@ -21,16 +22,24 @@
 
 set -uo pipefail
 
-cbx=/cvmfs/mu2e.opensciencegrid.org/bin/claudebox
-[[ -x "$cbx" ]] || { echo "claudebox: $cbx not found (is CVMFS mounted?)" >&2; exit 1; }
-
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 shared="$script_dir/../shared"
+
+# The claudebox script: the copy that comes with the harness, else the one
+# in the CVMFS bin directory. $CLAUDEBOX_BIN overrides both.
+cbx="${CLAUDEBOX_BIN:-$script_dir/../claudebox/claudebox}"
+[[ -x "$cbx" || -n "${CLAUDEBOX_BIN:-}" ]] || cbx=/cvmfs/mu2e.opensciencegrid.org/bin/claudebox
+[[ -x "$cbx" ]] || { echo "claudebox: $cbx not found" >&2; exit 1; }
+
+# Backend settings (key, base URL, model mapping). env.sh keeps them out of
+# the user's shell, so load them here.
+# shellcheck source=/dev/null
+[[ -n "${CLAUDE_HOME:-}" && -f "$CLAUDE_HOME/.env" ]] && source "$CLAUDE_HOME/.env"
 
 sub="${1:-}"
 case "$sub" in
   run|agent|start|shell|sh) shift ;;
-  -h|--help|help) exec "$cbx" "$@" ;;
+  -h|--help|help|-v|--version) exec "$cbx" "$@" ;;
   # Bare `claudebox`, `claudebox DIR` or `claudebox --opt ...`: an
   # interactive session, like `claude` (the CVMFS one prints help).
   ""|-*) sub=run ;;

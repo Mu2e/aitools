@@ -51,8 +51,11 @@
     "deny": [
       "Bash(ssh *)",
       "Bash(scp *)",
+      "Bash(sftp *)",
+      "Bash(rsync *)",
+      "Bash(kinit *)",
       "Bash(sudo *)",
-      "Bash(kinit *)"
+      "Bash(su *)"
     ]
   },
   "env": {

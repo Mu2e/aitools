@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS usage.sessions (
     logged_at           TIMESTAMPTZ NOT NULL,   -- when this row was written
     session_created_at  TIMESTAMPTZ,
     session_updated_at  TIMESTAMPTZ,
-    provider            TEXT,                   -- litellm | vllm | ...
+    provider            TEXT,                   -- litellm | vllm | alcf | anthropic (API key) | claude.ai (subscription)
     endpoint_url        TEXT,
     model               TEXT,
     turns               INTEGER,
