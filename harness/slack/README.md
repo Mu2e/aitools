@@ -44,8 +44,11 @@ into `<deploy-root>/releases/<ref>/.venv`, a `current` symlink, and a
   sees: the bot's own tool `slack__show_image` puts images from this turn's
   tool results in the thread after the answer (needs the `files:write`
   scope; without it the answer still posts and the bot logs it once), and an
-  image it only looked at stays out. Up to 6 images per turn are posted and 4
-  (of at most 3.5 MB) shown to the model.
+  image it only looked at stays out. An image stays in the model's context,
+  and can still be shown, for two more messages, or until the thread has been
+  idle longer than the prompt cache lives (5 min); then it becomes a note
+  naming the file, and the model fetches it again if needed. Up to 6 images
+  per turn are posted and 4 (of at most 3.5 MB) shown to the model.
   `--no-post-images` / `MU2E_SLACK_POST_IMAGES=0` and `--no-vision` /
   `MU2E_SLACK_VISION=0` turn either off.
 - **One thread, one conversation.** Thread state lives in memory and is

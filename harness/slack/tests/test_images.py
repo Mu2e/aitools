@@ -282,12 +282,68 @@ def test_an_image_the_model_only_looked_at_is_not_posted():
     assert conv.turn_images and conv.turn_shown == []
 
 
-def test_only_this_turns_images_can_be_shown():
+def test_only_recent_images_can_be_shown():
     conv = _conv(ScriptedClient())
     assert "nothing to show" in conv._show({"names": ["fig.png"]})
-    conv.turn_images = [ToolImage(PNG, "image/png", "fig.png")]
+    conv.recent_images = {"fig.png": (1, ToolImage(PNG, "image/png", "fig.png"))}
     out = conv._show({"names": ["other.png", "fig.png", "fig.png"]})
     assert [i.name for i in conv.turn_shown] == ["fig.png"]
     assert "other.png" in out and "Available: fig.png" in out
     assert conv._show({"names": []}).startswith("Error")
     assert conv._show({"names": "fig.png"}) == "Already marked to be shown."   # a bare string works too
+
+
+# -- how long images stay in the context --------------------------------------
+
+def _fetch_then_answer():
+    return [_response(tool_calls=[_call("kb__kb_get_image", {"identifier": "fig"}, "c1")]), _response("ok")]
+
+
+def _images_in_context(conv):
+    return sum(1 for m in conv.messages if "tool_images" in m)
+
+
+def test_an_image_stays_for_two_more_turns_then_becomes_a_note():
+    client = ScriptedClient(*_fetch_then_answer(), _response("a"), _response("b"), _response("c"))
+    conv = _conv(client)
+    asyncio.run(conv.ask("show me the figure"))            # turn 1: fetched
+    for turn in ("and the inset?", "and the axis?"):       # turns 2 and 3: still there
+        asyncio.run(conv.ask(turn))
+        assert _images_in_context(conv) == 1 and "fig.png" in conv.recent_images
+    asyncio.run(conv.ask("something else"))                # turn 4: gone
+    assert _images_in_context(conv) == 0 and conv.recent_images == {}
+    notes = [m["content"] for m in conv.messages if isinstance(m.get("content"), str) and "was shown here" in m["content"]]
+    assert notes and "fig.png" in notes[0] and "kb_get_image" in notes[0]
+    assert "base64" not in json.dumps(client.sent[-1])
+
+
+def test_an_idle_thread_drops_its_images():
+    client = ScriptedClient(*_fetch_then_answer(), _response("a"))
+    conv = _conv(client)
+    asyncio.run(conv.ask("show me the figure"))
+    conv.last_active -= agent.IMAGE_IDLE_SECONDS + 1        # the prompt cache has gone cold
+    asyncio.run(conv.ask("and the inset?"))
+    assert _images_in_context(conv) == 0 and conv.recent_images == {}
+
+
+def test_an_earlier_image_can_be_shown_while_it_is_in_context():
+    client = ScriptedClient(*_fetch_then_answer(),
+                            _response(tool_calls=[_call(agent.SHOW_IMAGE_TOOL, {"names": ["fig.png"]}, "c2")]),
+                            _response("posted"))
+    conv = _conv(client)
+    asyncio.run(conv.ask("what is in this figure?"))       # looked at, not shown
+    assert conv.turn_shown == []
+    asyncio.run(conv.ask("post it please"))                # next turn: shown without a new fetch
+    assert [i.name for i in conv.turn_shown] == ["fig.png"]
+
+
+def test_reset_and_compaction_forget_the_images():
+    conv = _conv(ScriptedClient(*_fetch_then_answer()))
+    asyncio.run(conv.ask("show me"))
+    assert conv.recent_images
+    conv.reset()
+    assert conv.recent_images == {}
+    conv2 = _conv(ScriptedClient(*_fetch_then_answer(), _response("summary")))
+    asyncio.run(conv2.ask("show me"))
+    asyncio.run(conv2.compact())
+    assert conv2.recent_images == {} and _images_in_context(conv2) == 0

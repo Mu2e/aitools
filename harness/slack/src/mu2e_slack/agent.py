@@ -60,6 +60,13 @@ SHOW_IMAGE_SCHEMA = {
     },
 }
 
+# How long an image stays in the model's context (and can still be shown):
+# through this many further user turns, and never past an idle gap longer
+# than the prompt cache lives -- after that resending it costs full price and
+# a follow-up about it is unlikely. Then it becomes a note naming the file.
+IMAGE_KEEP_TURNS = 2
+IMAGE_IDLE_SECONDS = 300
+
 MAX_VISION_IMAGES = 4
 MAX_VISION_BYTES = 3_500_000
 _NO_VISION_NOTE = "[image not shown to the model: it does not accept images; the user sees it in the thread]"
@@ -108,6 +115,9 @@ class Conversation:
         self.turn_images: list[ToolImage] = []
         # The ones the model chose to show the user (SHOW_IMAGE_TOOL).
         self.turn_shown: list[ToolImage] = []
+        # Images still in the model's context, by name, with the turn they came
+        # from: what the model can still see, it can still show.
+        self.recent_images: dict[str, tuple[int, ToolImage]] = {}
         self.can_show_images = bool(getattr(cfg, "post_images", True))
         # Show them to the model too (vision); turned off for the thread when
         # its model rejects an image block, so a text-only model keeps working.
@@ -136,7 +146,9 @@ class Conversation:
 
     async def ask(self, text: str, on_tool=None) -> str:
         """Run one user turn to completion and return the reply text."""
+        idle = time.monotonic() - self.last_active
         self.usage.turns += 1
+        self._expire_images(idle)
         now = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
         self.messages.append({"role": "user", "content": f"[{now}] {text}"})
 
@@ -210,9 +222,10 @@ class Conversation:
             names = [names]
         if not isinstance(names, list) or not names:
             return "Error: give the file names of the images to show, as names=[...]."
-        available = {i.name: i for i in self.turn_images}
+        available = {name: image for name, (_, image) in self.recent_images.items()}
         if not available:
-            return "No image was returned by a tool in this turn, so there is nothing to show."
+            return ("No image from a tool is in this conversation any more, so there is nothing to show. "
+                    "Fetch it again (e.g. kb_get_image) to show it.")
         shown, unknown = [], []
         for n in names:
             image = available.get(str(n).strip().rsplit("/", 1)[-1])
@@ -225,7 +238,7 @@ class Conversation:
         if shown:
             parts.append(f"Will be posted to the thread after your answer: {', '.join(shown)}.")
         if unknown:
-            parts.append(f"Not from this turn's tool results, not shown: {', '.join(unknown)}. "
+            parts.append(f"Not among the images the tools returned recently, not shown: {', '.join(unknown)}. "
                          f"Available: {', '.join(available)}.")
         return " ".join(parts) or "Already marked to be shown."
 
@@ -239,7 +252,22 @@ class Conversation:
         names = ", ".join(i.name for i in shown)
         blocks: list[dict] = [{"type": "text", "text": f"The images the tool returned ({names}):"}]
         blocks += [{"type": "image_url", "image_url": {"url": i.data_url}} for i in shown]
-        self.messages.append({"role": "user", "content": blocks, "tool_images": True})
+        self.messages.append({"role": "user", "content": blocks, "tool_images": self.usage.turns,
+                              "image_names": [i.name for i in shown]})
+
+    def _expire_images(self, idle_seconds: float) -> None:
+        """Take images out of the context once they are IMAGE_KEEP_TURNS turns
+        old, or all of them after an idle gap longer than IMAGE_IDLE_SECONDS."""
+        now = self.usage.turns
+        cold = idle_seconds > IMAGE_IDLE_SECONDS
+        for i, m in enumerate(self.messages):
+            if "tool_images" in m and (cold or now - m["tool_images"] > IMAGE_KEEP_TURNS):
+                names = ", ".join(m.get("image_names") or []) or "an image"
+                self.messages[i] = {"role": "user", "content": (
+                    f"[image {names} was shown here; fetch it again (e.g. kb_get_image) to look at "
+                    f"or show it]")}
+        self.recent_images = {n: (t, img) for n, (t, img) in self.recent_images.items()
+                              if not cold and now - t <= IMAGE_KEEP_TURNS}
 
     def _plain_messages(self, without_images: bool = False) -> list[dict]:
         """The history as the API takes it: without our "tool_images" marker,
@@ -251,7 +279,7 @@ class Conversation:
             elif without_images:
                 out.append({"role": "user", "content": "[images were shown here]"})
             else:
-                out.append({k: v for k, v in m.items() if k != "tool_images"})
+                out.append({k: v for k, v in m.items() if k not in ("tool_images", "image_names")})
         return out
 
     def _drop_images(self) -> bool:
@@ -331,6 +359,8 @@ class Conversation:
                 found: list[ToolImage] = []
                 result = await self.tools.call(name, arguments, images=found)
                 self.turn_images.extend(found)
+                for image in found:
+                    self.recent_images[image.name] = (self.usage.turns, image)
                 if images is not None:
                     images.extend(found)
                 if found and self.can_show_images:
@@ -388,6 +418,7 @@ class Conversation:
         self._account(response)
         summary = response.choices[0].message.content or ""
 
+        self.recent_images = {}  # the summary carries no images
         self.messages = [
             {"role": "user", "content": f"Notes from earlier in this thread:\n\n{summary}"},
             {"role": "assistant", "content": "Noted -- carrying on from there."},
@@ -396,6 +427,7 @@ class Conversation:
 
     def reset(self) -> None:
         self.messages = []
+        self.recent_images = {}
         self.last_prompt_tokens = 0
 
     # -- backend protocol (see backend.py) ------------------------------------
