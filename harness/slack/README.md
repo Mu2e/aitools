@@ -137,6 +137,11 @@ $deploy/current/.venv/bin/mu2e-slack-bot-install-unit.sh \
 server offers and what is down) and Slack auth, then exits without
 connecting.
 
+A server that is down when the bot starts (after a reboot all units start
+at once, and kb-mcp takes a while to come up) is left out of the tool list
+and tried again at the start of later questions, at most once a minute; the
+log says `MCP server NAME available again` when it joins. No restart needed.
+
 Secrets live only in the env file, never in argv — argv is visible to every
 user on a shared machine via `ps`, and the Slack and MIKEY tokens are
 workspace- and collaboration-wide. The env file sits at the deploy root,

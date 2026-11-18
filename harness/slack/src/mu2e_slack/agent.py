@@ -99,6 +99,8 @@ class Conversation:
     async def ask(self, text: str, on_tool=None) -> str:
         """Run one user turn to completion and return the reply text."""
         self.usage.turns += 1
+        # A server that was down when the bot started may be up by now.
+        await self.tools.retry_failed()
         now = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
         self.messages.append({"role": "user", "content": f"[{now}] {text}"})
 
