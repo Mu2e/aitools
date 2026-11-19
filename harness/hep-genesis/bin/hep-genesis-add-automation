@@ -22,7 +22,7 @@ template="${1:?usage: hep-genesis-add-automation [--force] <template.json> [proj
 [[ -f "$template" ]] || template="$templates/$template"
 [[ -f "$template" ]] || { echo "no template $1 (see --list)" >&2; exit 2; }
 project="${2:-$(basename "$(cd "$(dirname "$template")" && pwd -P)")}"
-: "${HEP_PROJECTS_DIR:?HEP_PROJECTS_DIR is not set: source <install>/current/setup.sh first}"
+: "${HEP_PROJECTS_DIR:?HEP_PROJECTS_DIR is not set: source the harness's env.sh first}"
 exec "$here/../venv/bin/python" - "$template" "$project" "$force" <<'PY'
 import shutil, sys
 from pathlib import Path

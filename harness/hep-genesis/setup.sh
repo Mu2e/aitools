@@ -1,61 +1,84 @@
-# Source this to use hep-genesis on a Mu2e gpvm, from an installed copy:
+#!/usr/bin/env bash
+# Usage:
+#   . setup.sh      (sourced -- also leaves hep-genesis on PATH in your shell)
+#   ./setup.sh      (executed -- installs only, doesn't touch your shell)
 #
-#   source <install>/current/setup.sh
-#   hep-genesis-web                  # the web UI (prints the ssh tunnel line and the URL)
-#   hep-genesis-agent --help         # the command line
+# First use, and safe to re-run: installs hep-genesis if there is no install
+# at $HEP_GENESIS_ROOT (see env.sh, which this always sources), creates your
+# data folder with the Mu2e settings, and loads the environment. In later
+# shells, `. env.sh` is enough.
 #
-# Nothing is written next to this file. Your data goes to
-#   $HG_DATA_DIR  (default /exp/mu2e/data/users/$USER/hep-genesis-data, mode 700):
-#   .env (settings, tokens), servers.json, models.json, projects/, workspace/
-# both created on first use from the Mu2e templates in site/.
+# An install that exists is left alone, also when hep-genesis.pin has moved
+# on since: to upgrade, run install.sh yourself (it keeps the previous
+# release to roll back to).
 #
-# Sourced, so no `set -e` and no `exit`: a failure must not close your shell.
+# Deliberately no `set -e`/`set -u` at this file's top level: it is meant to
+# be sourced, and those would leak into your interactive shell. install.sh
+# keeps its own, as it is always run as a subprocess.
 
-_hg_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat >&2 <<'USAGE'
+Usage:
+  . setup.sh
+  ./setup.sh
+USAGE
+  return 2 2>/dev/null || exit 2
+fi
 
-_hg_setup() {
-    local root="$1" data="${HG_DATA_DIR:-/exp/mu2e/data/users/$USER/hep-genesis-data}"
-    if [ ! -x "$root/bin/hep-genesis-agent" ]; then
-        echo "ERROR: no hep-genesis install at $root (source <install>/current/setup.sh)" >&2
-        return 1
-    fi
-    if [ ! -d "$data" ]; then
-        mkdir -p "$data" && chmod 700 "$data" || { echo "ERROR: cannot create $data (set HG_DATA_DIR)" >&2; return 1; }
-    fi
-    # The code reads these before it loads the .env, so they are exported
-    # here, not set in the .env. Without them it would use ~/hep-genesis.
-    export HEP_PROJECTS_DIR="$data/projects"
-    export HEP_WORKSPACE_DIR="$data/workspace"
-    export HEP_STAGING_DIR="$data/staging"
-    export DISPATCH_ARTIFACT_DIR="$data/artifacts"
-    export HEP_ENV_FILE="$data/.env"
-    export HEP_SERVERS_FILE="$data/servers.json"
-    # Mu2e's context for the model and its model presets: read from the
-    # install, so a new release updates them. Set your own file to override.
-    export HEP_CONTEXT_FILE="${HEP_CONTEXT_FILE:-$root/site/context.md}"
-    export HEP_MODEL_PRESETS_FILE="${HEP_MODEL_PRESETS_FILE:-$root/site/models.json}"
-    mkdir -p "$HEP_PROJECTS_DIR" "$HEP_WORKSPACE_DIR" "$HEP_STAGING_DIR" "$DISPATCH_ARTIFACT_DIR" || return 1
-    if [ ! -f "$HEP_ENV_FILE" ]; then
-        cp "$root/site/env.template" "$HEP_ENV_FILE" && chmod 600 "$HEP_ENV_FILE" || return 1
-        echo "Created $HEP_ENV_FILE (default model: vllm.fnal.gov, no key needed)."
-    fi
-    if [ ! -f "$HEP_SERVERS_FILE" ]; then
-        cp "$root/site/servers.json" "$HEP_SERVERS_FILE" && chmod 600 "$HEP_SERVERS_FILE" || return 1
-        echo "Created $HEP_SERVERS_FILE (the Mu2e MCP servers)."
-    fi
-    # Only the hep-genesis commands, not the environment's python.
-    case ":$PATH:" in
-        *":$root/bin:"*) ;;
-        *) export PATH="$root/bin:$PATH" ;;
-    esac
-    export HG_ROOT="$root"
-    echo "hep-genesis $(sed -n 's/^hep-genesis //p' "$root/VERSION" 2>/dev/null | cut -c1-10): data in $data"
-    echo "  hep-genesis-web      web UI"
-    echo "  hep-genesis-agent    command line (--help)"
-}
+hg_setup_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+if [[ -z "$hg_setup_dir" ]]; then
+  echo "Error: could not resolve script directory" >&2
+  return 1 2>/dev/null || exit 1
+fi
 
-_hg_setup "$_hg_root"
-_hg_status=$?
-unset -f _hg_setup
-unset _hg_root
-return $_hg_status 2>/dev/null || true
+# Not an error yet if this reports "not installed": that is what we fix next.
+source "$hg_setup_dir/env.sh" 2>/dev/null
+
+if [[ -x "$HEP_GENESIS_ROOT/current/bin/hep-genesis-agent" ]]; then
+  hg_have="$(sed -n 's/^hep-genesis //p' "$HEP_GENESIS_ROOT/current/VERSION" 2>/dev/null)"
+  hg_want="$(sed -n 's/^ref=//p' "$hg_setup_dir/hep-genesis.pin")"
+  echo "hep-genesis already installed: $HEP_GENESIS_ROOT/current (${hg_have:0:10})"
+  if [[ -n "$hg_want" && "$hg_have" != "$hg_want" ]]; then
+    echo "  The harness now pins ${hg_want:0:10}. To upgrade: bash $hg_setup_dir/install.sh $HEP_GENESIS_ROOT"
+  fi
+  unset hg_have hg_want
+else
+  echo "No hep-genesis at $HEP_GENESIS_ROOT -- installing (a minute or two)"
+  if ! bash "$hg_setup_dir/install.sh" "$HEP_GENESIS_ROOT"; then
+    echo "Error: the install failed" >&2
+    unset hg_setup_dir
+    return 1 2>/dev/null || exit 1
+  fi
+fi
+
+if ! source "$hg_setup_dir/env.sh"; then
+  echo "Error: failed to source env.sh" >&2
+  unset hg_setup_dir
+  return 1 2>/dev/null || exit 1
+fi
+
+# Your data folder, with the Mu2e settings on first use. Private: the .env
+# holds keys.
+if [[ ! -d "$HG_DATA_DIR" ]]; then
+  if ! ( umask 077 && mkdir -p "$HG_DATA_DIR" ); then
+    echo "Error: cannot create $HG_DATA_DIR (set HG_DATA_DIR)" >&2
+    unset hg_setup_dir
+    return 1 2>/dev/null || exit 1
+  fi
+fi
+( umask 077 && mkdir -p "$HEP_PROJECTS_DIR" "$HEP_WORKSPACE_DIR" "$HEP_STAGING_DIR" "$DISPATCH_ARTIFACT_DIR" )
+if [[ ! -e "$HEP_ENV_FILE" ]]; then
+  ( umask 077 && cp "$hg_setup_dir/site/env.template" "$HEP_ENV_FILE" ) \
+    && echo "Created $HEP_ENV_FILE (default model: vllm.fnal.gov, no key needed)"
+fi
+if [[ ! -e "$HEP_SERVERS_FILE" ]]; then
+  ( umask 077 && cp "$hg_setup_dir/site/servers.json" "$HEP_SERVERS_FILE" ) \
+    && echo "Created $HEP_SERVERS_FILE (the Mu2e MCP servers)"
+fi
+
+echo
+echo "hep-genesis is ready. Data: $HG_DATA_DIR"
+echo "  hep-genesis-web      web UI (prints an ssh tunnel line and a URL)"
+echo "  hep-genesis-agent    command line (--help)"
+echo "In a new shell:  . $hg_setup_dir/env.sh"
+unset hg_setup_dir
