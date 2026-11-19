@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 # Register the systemd --user unit that runs hep-genesis automations for a
-# service account (mu2eai), one instance per automation:
+# service account (mu2eai): one service, one process, every automation of the
+# data folder (each <project>/watches/<name>.json; "enabled": false leaves
+# one out).
 #
 #   <install>/current/systemd/install-unit.sh --data-dir <path> --env-file <path> [options]
 #
-#   systemctl --user enable --now hep-genesis-watch@<project>__<name>
-#   systemctl --user status       hep-genesis-watch@dqm-alarm__dqm-alarms
-#   journalctl --user -u          hep-genesis-watch@dqm-alarm__dqm-alarms -f -o cat
+#   systemctl --user enable --now hep-genesis-automations
+#   systemctl --user restart      hep-genesis-automations   # a new or re-enabled automation, an upgrade
+#   journalctl --user -u          hep-genesis-automations -f -o cat
+#
+# An edited automation needs no restart: it loads its file again within
+# seconds. One switched off ("enabled": false) ends the same way.
 #
 # The unit is rendered into this release (share/) and registered with
 # `systemctl --user link`, so ~/.config/systemd holds only a symlink. Its
-# commands point at <deploy-root>/current: a new release takes effect on
-# `systemctl --user restart 'hep-genesis-watch@*'`. Re-run this script after
-# an install whenever the unit template or these options change, and before
-# the release the link points into is pruned.
+# command points at <deploy-root>/current: a new release takes effect on a
+# restart. Re-run this script after an install whenever the unit template or
+# these options change, and before the release the link points into is pruned.
 #
 #   --data-dir <path>   REQUIRED, absolute. The service's data folder
 #                       (projects/, workspace/, servers.json, models.json);
@@ -29,9 +33,9 @@
 #
 # Once per account, or the services stop at logout:  loginctl enable-linger
 #
-# Automations run as units must not also be started from a web UI on the same
-# data folder: the second copy is refused (its lock), but Stop there would end
-# the unit's copy without systemd restarting it.
+# With a web UI on the same data folder: Stop there ends that automation
+# until the service is restarted, and Start runs it from the web server, not
+# from this service. To switch one off for good, untick Enabled in its form.
 
 set -euo pipefail
 
@@ -54,10 +58,10 @@ done
 home="${home:-$data/home}"
 # <deploy-root>/releases/<commit>/systemd/install-unit.sh
 root="${root:-$(cd "$here/../../.." && pwd -P)}"
-[[ -x "$root/current/bin/hep-genesis-watch" ]] || { echo "ERROR: no install at $root/current (pass --deploy-root)" >&2; exit 2; }
+[[ -x "$root/current/bin/hep-genesis-agent" ]] || { echo "ERROR: no install at $root/current (pass --deploy-root)" >&2; exit 2; }
 
 unit="$(sed -e "s|@DATA_DIR@|$data|g" -e "s|@HOME_DIR@|$home|g" -e "s|@ENV_FILE@|$env_file|g" \
-            -e "s|@DEPLOY_ROOT@|$root|g" "$here/hep-genesis-watch@.service.in")"
+            -e "s|@DEPLOY_ROOT@|$root|g" "$here/hep-genesis-automations.service.in")"
 if [[ "$dry" == 1 ]]; then
   printf '%s\n' "$unit"
   exit 0
@@ -72,13 +76,20 @@ chmod 700 "$data"
 
 share="$(cd "$here/.." && pwd -P)/share"
 mkdir -p "$share"
-printf '%s\n' "$unit" > "$share/hep-genesis-watch@.service"
-systemctl --user link --force "$share/hep-genesis-watch@.service"
+printf '%s\n' "$unit" > "$share/hep-genesis-automations.service"
+# The unit of earlier releases: one instance per automation.
+if systemctl --user cat 'hep-genesis-watch@.service' >/dev/null 2>&1; then
+  systemctl --user stop 'hep-genesis-watch@*' 2>/dev/null || true
+  cfg="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+  rm -f "$cfg/hep-genesis-watch@.service" "$cfg"/*.wants/hep-genesis-watch@*.service
+  echo "Removed the earlier unit hep-genesis-watch@.service"
+fi
+systemctl --user link --force "$share/hep-genesis-automations.service"
 systemctl --user daemon-reload
 
 if ! loginctl show-user "$USER" -p Linger 2>/dev/null | grep -q "Linger=yes"; then
   echo "NOTE: linger is off for $USER: the services stop when you log out. Run: loginctl enable-linger"
 fi
-echo "Unit linked: $share/hep-genesis-watch@.service"
-echo "Start an automation:  systemctl --user enable --now hep-genesis-watch@<project>__<name>"
-echo "Running now:          systemctl --user list-units 'hep-genesis-watch@*'"
+echo "Unit linked: $share/hep-genesis-automations.service"
+echo "Start:  systemctl --user enable --now hep-genesis-automations"
+echo "Log:    journalctl --user -u hep-genesis-automations -f -o cat"

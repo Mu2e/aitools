@@ -1,7 +1,8 @@
 # Rendered by install-unit.sh; do not edit the installed copy (re-run it).
-# One instance per automation: hep-genesis-watch@<project>__<name>.service
+# One service for all automations of the data folder: every
+# <project>/watches/<name>.json there, except those with "enabled": false.
 [Unit]
-Description=hep-genesis automation %i
+Description=hep-genesis automations
 After=network-online.target
 Wants=network-online.target
 
@@ -23,18 +24,20 @@ Environment=HEP_ENV_FILE=@ENV_FILE@
 # No coding tasks from an unattended service, whatever the .env says.
 Environment=HEP_CODING=0
 Environment=PYTHONUNBUFFERED=1
-ExecStart=@DEPLOY_ROOT@/current/bin/hep-genesis-watch %i
-# Ends at its next check, state saved; SIGTERM after that.
-ExecStop=@DEPLOY_ROOT@/current/bin/hep-genesis-watch %i --watch-stop
+ExecStart=@DEPLOY_ROOT@/current/bin/hep-genesis-agent --watch-all
+# On SIGTERM each automation finishes the check it is in, saves its state and
+# ends; one waiting on a slow server is killed after this long (its state is
+# from its last finished check).
 TimeoutStopSec=30
 # The chats an automation starts are processes of their own: stopping or
-# restarting the automation must not kill an investigation in progress.
+# restarting the service must not kill an investigation in progress.
 KillMode=process
+# An unexpected error in one automation ends the process: start it again.
 Restart=on-failure
 RestartSec=60
-# 1: another copy holds the automation's lock; 2: its file or its tool is wrong.
-# Neither is fixed by trying again.
-RestartPreventExitStatus=1 2
+# 2: no automation could run (every file or its tool is wrong). Not fixed by
+# trying again.
+RestartPreventExitStatus=2
 
 [Install]
 WantedBy=default.target

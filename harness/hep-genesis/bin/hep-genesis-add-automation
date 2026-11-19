@@ -8,7 +8,8 @@
 # The project defaults to the template's folder name, as in
 # <install>/automations/<project>/<name>.json. An automation of that name
 # already in the project is left alone (pass --force to replace it). It is
-# not started: use the web UI's Automations panel, or the systemd unit.
+# not started: use the web UI's Automations panel, or, where the service runs
+# them all, `systemctl --user restart hep-genesis-automations`.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 templates="$(dirname "$here")/automations"
@@ -40,5 +41,5 @@ if dest.exists() and not force:
 else:
     shutil.copyfile(template, dest)
     print(f"installed {dest}")
-print(f"automation id: {meta['slug']}/{dest.stem}   (systemd instance: {meta['slug']}__{dest.stem})")
+print(f"automation id: {meta['slug']}/{dest.stem}   (by hand: hep-genesis-watch {meta['slug']}__{dest.stem} --once)")
 PY

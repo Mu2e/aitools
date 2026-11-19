@@ -20,7 +20,7 @@ and the automations we run.
 | `site/` | Mu2e settings: MCP servers, model presets, context for the model, `.env` template, version constraints. |
 | `automations/` | Automation templates, `<project>/<name>.json`. |
 | `bin/` | `hep-genesis-watch`, `hep-genesis-add-automation`. |
-| `systemd/` | The `systemd --user` unit that runs automations for a service account. |
+| `systemd/` | The `systemd --user` unit that runs all automations for a service account. |
 
 ## Use it (on a gpvm)
 
@@ -191,17 +191,27 @@ cp $I/current/site/env.template $D/.env && chmod 600 $D/.env   # then: model end
 $I/current/systemd/install-unit.sh --data-dir $D --env-file $D/.env
 loginctl enable-linger                            # once per account
 
-# put the automations in place, then start them
+# put the automations in place, then start the one service that runs them all
 export HEP_PROJECTS_DIR=$D/projects
 $I/current/bin/hep-genesis-add-automation dqm-alarm/dqm-alarms.json
-systemctl --user enable --now hep-genesis-watch@dqm-alarm__dqm-alarms
+systemctl --user enable --now hep-genesis-automations
 ```
 
 ```bash
-systemctl --user list-units 'hep-genesis-watch@*'
-journalctl --user -u hep-genesis-watch@dqm-alarm__dqm-alarms -f -o cat
-systemctl --user restart 'hep-genesis-watch@*'    # after an upgrade
+systemctl --user status hep-genesis-automations
+journalctl --user -u hep-genesis-automations -f -o cat    # every line starts with <project>/<name>
+systemctl --user restart hep-genesis-automations          # a new automation, or an upgrade
 ```
+
+One process runs every automation file of the data folder
+(`hep-genesis-agent --watch-all`). What needs a restart and what does not:
+
+| Change | Takes effect |
+|---|---|
+| Edit an automation (web form, or its file) | by itself, within seconds |
+| `"enabled": false` in its file (Enabled in the form) | by itself: that one ends |
+| A new automation, or one enabled again | on a restart of the service |
+| A new release | on a restart of the service |
 
 Notes:
 
@@ -210,14 +220,20 @@ Notes:
   night would then fail.
 - **A restart does not repeat anything.** An automation keeps what it has
   reported in its state folder next to its file.
-- **Chats outlive the automation.** They are processes of their own
-  (`KillMode=process`): restarting a unit does not stop an investigation.
+- **Chats outlive the automations.** They are processes of their own
+  (`KillMode=process`): restarting the service does not stop an investigation.
+- **A slow server.** A check that gets no answer is given up after 120 s
+  (`"timeout_s"` in the check, under `probes`), reported once as an event, and
+  tried again at the next interval. The other automations are not held up.
+- **One failing takes all down, briefly.** An unexpected error in one
+  automation ends the process, and systemd starts it again after a minute. A
+  wrong file is not that: it is reported and left out.
 - **Results** are chats in the service's data folder. Reading them needs a
   web UI on that folder (as the service account, on loopback, through an ssh
   tunnel); posting them somewhere people look (Slack, ECL) is not built yet.
-- **Not from two places.** Do not also start the same automations from a web
-  UI on the same data folder: Stop there ends the unit's copy, and systemd
-  does not restart a clean stop.
+- **With a web UI on the same data folder.** Stop there ends that automation
+  until the service restarts; Start runs it from the web server instead of
+  the service. To switch one off for good, untick Enabled in its form.
 
 ## Templates
 
