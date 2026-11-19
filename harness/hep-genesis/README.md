@@ -213,6 +213,31 @@ One process runs every automation file of the data folder
 | A new automation, or one enabled again | on a restart of the service |
 | A new release | on a restart of the service |
 
+### The web UI of the service
+
+To read the chats the automations start, and to edit the automations in a
+form, run the web UI on the same data folder as a second service:
+
+```bash
+$I/current/systemd/install-unit.sh --data-dir $D --env-file $D/.env --web-port 8200 --web-no-token
+systemctl --user enable --now hep-genesis-web
+```
+
+```bash
+ssh -L 8200:localhost:8200 mu2eai@mu2eaigpvm01      # then open http://localhost:8200/
+journalctl --user -u hep-genesis-web -n 20 -o cat
+```
+
+- **It listens on the machine itself only** (127.0.0.1), on port 8200. MCP
+  servers use 80XX there.
+- **`--web-no-token`: no login.** Everyone who can log in to the machine can
+  use it, and acts as the service account in it: chats, automations, MCP
+  servers, model settings. Leave the option out to keep the token; the link
+  with it is then in the journal, new at every start.
+- **No coding tasks**, as for the automations: a chat there cannot run
+  commands. `install-unit.sh` refuses an `.env` that sets `HEP_CODING`.
+- **Restarting it does not touch the automations**, and the other way round.
+
 Notes:
 
 - **Model.** Use an endpoint with a key (Fermilab LiteLLM) for the service.

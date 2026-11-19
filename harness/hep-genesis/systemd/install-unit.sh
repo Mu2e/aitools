@@ -29,6 +29,15 @@
 #                       unattended service should not depend on.
 #   --deploy-root <p>   Folder holding releases/ and current (default: found
 #                       from this script's place).
+#   --web-port <port>   Also register hep-genesis-web.service: the web UI on
+#                       this data folder, on 127.0.0.1:<port> (reach it with
+#                       ssh -L <port>:localhost:<port> <this machine>). Coding
+#                       tasks are off in it. Without the option, a web unit
+#                       registered earlier is left as it is.
+#   --web-no-token      With --web-port: ask for no token. Everyone who can
+#                       log in to this machine then acts as this account in
+#                       the UI (chats, automations, servers, model keys).
+#                       Without it, the link with the token is in the journal.
 #   --dry-run           Print the unit and exit.
 #
 # Once per account, or the services stop at logout:  loginctl enable-linger
@@ -42,34 +51,49 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 usage() { sed -n '2,/^$/s/^# \{0,1\}//p' "${BASH_SOURCE[0]}" >&2; exit 2; }
 
-data="" env_file="" home="" root="" dry=0
+data="" env_file="" home="" root="" dry=0 web_port="" web_args=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --data-dir) data="${2:?}"; shift 2 ;;
     --env-file) env_file="${2:?}"; shift 2 ;;
     --home) home="${2:?}"; shift 2 ;;
     --deploy-root) root="${2:?}"; shift 2 ;;
+    --web-port) web_port="${2:?}"; shift 2 ;;
+    --web-no-token) web_args="--no-token"; shift ;;
     --dry-run) dry=1; shift ;;
     *) usage ;;
   esac
 done
 [[ -n "$data" && -n "$env_file" ]] || usage
 [[ "$data" == /* && "$env_file" == /* ]] || { echo "ERROR: --data-dir and --env-file must be absolute" >&2; exit 2; }
+[[ -z "$web_port" || "$web_port" =~ ^[0-9]+$ ]] || { echo "ERROR: --web-port takes a number" >&2; exit 2; }
+[[ -z "$web_args" || -n "$web_port" ]] || { echo "ERROR: --web-no-token needs --web-port" >&2; exit 2; }
 home="${home:-$data/home}"
 # <deploy-root>/releases/<commit>/systemd/install-unit.sh
 root="${root:-$(cd "$here/../../.." && pwd -P)}"
 [[ -x "$root/current/bin/hep-genesis-agent" ]] || { echo "ERROR: no install at $root/current (pass --deploy-root)" >&2; exit 2; }
 
-unit="$(sed -e "s|@DATA_DIR@|$data|g" -e "s|@HOME_DIR@|$home|g" -e "s|@ENV_FILE@|$env_file|g" \
-            -e "s|@DEPLOY_ROOT@|$root|g" "$here/hep-genesis-automations.service.in")"
+render() {
+  sed -e "s|@DATA_DIR@|$data|g" -e "s|@HOME_DIR@|$home|g" -e "s|@ENV_FILE@|$env_file|g" \
+      -e "s|@DEPLOY_ROOT@|$root|g" -e "s|@WEB_PORT@|$web_port|g" -e "s|@WEB_ARGS@|$web_args|g" "$1"
+}
+unit="$(render "$here/hep-genesis-automations.service.in")"
+web_unit=""
+[[ -z "$web_port" ]] || web_unit="$(render "$here/hep-genesis-web.service.in")"
 if [[ "$dry" == 1 ]]; then
   printf '%s\n' "$unit"
+  [[ -z "$web_unit" ]] || printf '\n%s\n' "$web_unit"
   exit 0
 fi
 
 [[ -f "$env_file" ]] || { echo "ERROR: $env_file does not exist (copy site/env.template, fill it in, chmod 600)" >&2; exit 2; }
 mode="$(stat -c %a "$env_file")"
 [[ "$mode" == "600" || "$mode" == "400" ]] || { echo "ERROR: $env_file is mode $mode; it holds keys: chmod 600" >&2; exit 2; }
+# The .env is loaded over the unit's environment, so it could switch coding
+# tasks back on for a service that must not run commands.
+if grep -Eq '^[[:space:]]*(export[[:space:]]+)?HEP_CODING=' "$env_file"; then
+  echo "ERROR: $env_file sets HEP_CODING: remove that line (the units switch coding tasks off)" >&2; exit 2
+fi
 mkdir -p "$data" "$home" "$data/projects" "$data/workspace" "$data/staging" "$data/artifacts"
 chmod 700 "$data"
 [[ -f "$data/servers.json" ]] || { cp "$root/current/site/servers.json" "$data/servers.json"; chmod 600 "$data/servers.json"; echo "Created $data/servers.json"; }
@@ -85,6 +109,12 @@ if systemctl --user cat 'hep-genesis-watch@.service' >/dev/null 2>&1; then
   echo "Removed the earlier unit hep-genesis-watch@.service"
 fi
 systemctl --user link --force "$share/hep-genesis-automations.service"
+if [[ -n "$web_unit" ]]; then
+  [[ -x "$root/current/bin/hep-genesis-web" && -f "$root/current/src/desktop/out/web/index.html" ]] \
+    || echo "NOTE: this install has no built web UI (installed with --no-ui?): the web unit will serve no pages"
+  printf '%s\n' "$web_unit" > "$share/hep-genesis-web.service"
+  systemctl --user link --force "$share/hep-genesis-web.service"
+fi
 systemctl --user daemon-reload
 
 if ! loginctl show-user "$USER" -p Linger 2>/dev/null | grep -q "Linger=yes"; then
@@ -93,3 +123,8 @@ fi
 echo "Unit linked: $share/hep-genesis-automations.service"
 echo "Start:  systemctl --user enable --now hep-genesis-automations"
 echo "Log:    journalctl --user -u hep-genesis-automations -f -o cat"
+if [[ -n "$web_unit" ]]; then
+  echo "Web UI linked: $share/hep-genesis-web.service (127.0.0.1:$web_port${web_args:+, no token})"
+  echo "Start:  systemctl --user enable --now hep-genesis-web"
+  echo "Reach:  ssh -L $web_port:localhost:$web_port $(hostname -f)   then http://localhost:$web_port/"
+fi
