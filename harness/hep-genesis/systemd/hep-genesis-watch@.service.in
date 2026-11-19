@@ -1,0 +1,40 @@
+# Rendered by install-unit.sh; do not edit the installed copy (re-run it).
+# One instance per automation: hep-genesis-watch@<project>__<name>.service
+[Unit]
+Description=hep-genesis automation %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# A --user service starts in $HOME; everything it writes belongs in the data folder.
+WorkingDirectory=@DATA_DIR@
+Environment=HOME=@HOME_DIR@
+Environment=HEP_PROJECTS_DIR=@DATA_DIR@/projects
+Environment=HEP_WORKSPACE_DIR=@DATA_DIR@/workspace
+Environment=HEP_STAGING_DIR=@DATA_DIR@/staging
+Environment=DISPATCH_ARTIFACT_DIR=@DATA_DIR@/artifacts
+Environment=HEP_SERVERS_FILE=@DATA_DIR@/servers.json
+Environment=HEP_CONTEXT_FILE=@DEPLOY_ROOT@/current/site/context.md
+Environment=HEP_MODEL_PRESETS_FILE=@DEPLOY_ROOT@/current/site/models.json
+# Secrets (model key, the service's Mikey key) are in this file, mode 600,
+# read by hep-genesis itself: never in the unit, never on a command line.
+Environment=HEP_ENV_FILE=@ENV_FILE@
+# No coding tasks from an unattended service, whatever the .env says.
+Environment=HEP_CODING=0
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@DEPLOY_ROOT@/current/bin/hep-genesis-watch %i
+# Ends at its next check, state saved; SIGTERM after that.
+ExecStop=@DEPLOY_ROOT@/current/bin/hep-genesis-watch %i --watch-stop
+TimeoutStopSec=30
+# The chats an automation starts are processes of their own: stopping or
+# restarting the automation must not kill an investigation in progress.
+KillMode=process
+Restart=on-failure
+RestartSec=60
+# 1: another copy holds the automation's lock; 2: its file or its tool is wrong.
+# Neither is fixed by trying again.
+RestartPreventExitStatus=1 2
+
+[Install]
+WantedBy=default.target

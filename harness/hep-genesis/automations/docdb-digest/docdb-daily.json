@@ -1,0 +1,19 @@
+{
+  "name": "docdb-daily",
+  "interval_s": 60,
+  "servers": [],
+  "probes": {},
+  "rules": [
+    {
+      "rule": "at",
+      "time": "08:00"
+    }
+  ],
+  "chat": {
+    "mode": "quick",
+    "prompt": "Daily Mu2e DocDB digest for {date}.\n\nFind the DocDB documents added or updated in the last 24 hours with the kb tools: kb_search with search_filter on source_id mu2e-docdb and a range on insert_time (and update_time) from 24 hours before {time} on. If the range filter returns nothing, say so and say what you tried; do not fill the digest with older documents.\n\nWrite the digest: one entry per document with its DocDB number, title, authors if given, and two or three sentences on what it says and why it matters; group the entries by subsystem or topic (tracker, calorimeter, CRV, DAQ, computing, physics, operations, ...). Start with three lines on the most important items of the day.",
+    "servers": [
+      "kb"
+    ]
+  }
+}
