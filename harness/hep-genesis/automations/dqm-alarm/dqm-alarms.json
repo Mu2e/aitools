@@ -39,6 +39,11 @@
       "runs",
       "ecl",
       "kb"
-    ]
+    ],
+    "budget": {
+      "minutes": 15,
+      "tool_calls": 25,
+      "tokens": 400000
+    }
   }
 }
