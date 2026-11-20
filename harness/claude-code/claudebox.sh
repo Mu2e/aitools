@@ -15,7 +15,9 @@
 # and it seeds the box home with the Mu2e context (CLAUDE.md) and a Sonnet
 # default. ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL (from the harness .env,
 # loaded below) are forwarded by claudebox itself. After an interactive `run`, the
-# session is added to the harness usage log.
+# session is added to the harness usage log. (A claudebox that knows
+# $AGENTBOX_POST_HOOK -- the agentbox example -- logs through that instead,
+# which also covers agents: see ../claudebox/log-usage.sh.)
 #
 # Bare `claudebox` (or `claudebox DIR`, `claudebox --opt`) means `run`.
 # Other subcommands (list, log, stop, clean, info, help) pass through.
@@ -64,9 +66,6 @@ mkdir -p "$box_home/.claude" && chmod 700 "$box_home" "$box_home/.claude"
 if [[ ! -e "$box_home/.claude/settings.json" ]]; then
   ( umask 077; printf '{\n  "model": "sonnet"\n}\n' > "$box_home/.claude/settings.json" )
 fi
-# Mu2e context, refreshed every launch (a copy: /exp is not mounted inside).
-cp -f "$shared/mu2e.md" "$box_home/.claude/CLAUDE.md" 2>/dev/null || true
-
 opts=()
 if [[ -n "${CLAUDE_HOME:-}" && -x "$CLAUDE_HOME/.local/bin/claude" ]]; then
   opts+=(--claude "$CLAUDE_HOME/.local/bin/claude")
@@ -99,6 +98,65 @@ if [[ -n "${MIKEY_TOKEN:-}" ]]; then
   fi
 else
   echo "claudebox: no MIKEY token -- starting without the Mu2e MCP servers" >&2
+fi
+
+# Mu2e context plus a note on what this particular box sees, refreshed every
+# launch (a copy: /exp is not mounted inside). The options are read here only
+# to describe them; claudebox does the real parsing.
+workdir=""; pnfs=0; binds=(); imports=(); sub_args=("$@")
+i=0
+while (( i < ${#sub_args[@]} )); do
+  a="${sub_args[i]}"
+  case "$a" in
+    --) break ;;
+    -C|--workdir) workdir="${sub_args[i+1]:-}"; ((i++)) ;;
+    --workdir=*) workdir="${a#--workdir=}" ;;
+    -b|--bind) binds+=("${sub_args[i+1]:-}"); ((i++)) ;;
+    --pnfs) pnfs=1 ;;
+    --krb5|--kerberos|--krb5-ccache|--token|--scitoken|--token-file|--github|--gh|--mikey|--display)
+      imports+=("${a#--}")
+      [[ "$a" == --krb5-ccache || "$a" == --token-file ]] && ((i++)) ;;
+    --secret|--secret-file|--mcp|--permission-mode|--model|--budget|--timeout|--prompt-file|--root|--image|--claude|-f) ((i++)) ;;
+    -*) ;;
+    *) [[ -z "$workdir" && "$sub" != agent && -d "$a" ]] && workdir="$a" ;;
+  esac
+  ((i++))
+done
+if [[ -z "$workdir" ]]; then
+  [[ "$sub" == agent ]] && workdir="$root/work" || workdir="$PWD"
+fi
+workdir="$(cd "$workdir" 2>/dev/null && pwd -P || echo "$workdir")"
+
+# claudebox lets the whole /exp/<exp>/app/users/$USER area through (its depth
+# check is one level short); that includes the harness config and API key.
+if [[ "$workdir" == /exp/* ]] && [[ "$(awk -F/ '{print NF-1}' <<<"$workdir")" -lt 6 ]]; then
+  echo "claudebox: refusing $workdir as the work directory: it holds your harness" >&2
+  echo "  config and keys. Use a project directory below it (-C DIR)." >&2
+  exit 1
+fi
+
+{
+  cat "$shared/mu2e.md" "$script_dir/../claudebox/box-note.md"
+  echo
+  echo "## This session"
+  echo
+  echo "- Work directory: \`$workdir\` (read-write, at its host path; the rest of \`/exp\` does not exist)"
+  echo "- \`/cvmfs\`: read-only"
+  if [[ "$pnfs" == 1 ]]; then echo "- \`/pnfs\`: read-only"; else echo "- \`/pnfs\`: not available"; fi
+  for b in "${binds[@]}"; do echo "- Extra bind \`$b\` (read-only unless it ends in \`:rw\`)"; done
+  if [[ -n "${MIKEY_TOKEN:-}" && -f "$mcp_file" ]]; then
+    echo "- Mu2e MCP servers: configured (check \`/mcp\`; tell the user if one is missing)"
+  else
+    echo "- Mu2e MCP servers: NOT available in this session; do not offer the runs/dqm/ecl/metacat/kb tools"
+  fi
+  (( ${#imports[@]} )) && echo "- Credential imports requested: ${imports[*]}"
+} > "$box_home/.claude/CLAUDE.md" 2>/dev/null || true
+
+# Usage logging by the box script itself, where it supports that.
+hook="$script_dir/../claudebox/log-usage.sh"
+if [[ -x "$hook" ]] && grep -q AGENTBOX_POST_HOOK "$cbx" 2>/dev/null; then
+  export AGENTBOX_POST_HOOK="${AGENTBOX_POST_HOOK:-$hook}"
+  exec "$cbx" "$sub" "${opts[@]}" "$@"
 fi
 
 if [[ "$sub" != run ]]; then

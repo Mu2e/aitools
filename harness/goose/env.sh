@@ -140,6 +140,19 @@ mu2eai-model() {
   goose-model "$@"
 }
 
+# Sandboxed goose: goosebox (goose in an apptainer container, the agentbox
+# example in ../claudebox). Bare `goosebox`, `goosebox DIR` or
+# `goosebox --opt` means `run`, like the claudebox function of the
+# claude-code harness; other subcommands pass through.
+goosebox() {
+  local gbx="$env_script_dir/../claudebox/goosebox"
+  case "${1:-}" in
+    ""|-C|--workdir|-b|--bind|--pnfs|--model|--mcp|--yolo|--permission-mode|--root|--image|--dry-run)
+      "$gbx" run "$@" ;;
+    *) if [[ -d "$1" ]]; then "$gbx" run "$@"; else "$gbx" "$@"; fi ;;
+  esac
+}
+
 # ---------------------------------------------------------------------------
 # Shared context injection via TOM (Top Of Mind) extension
 #
