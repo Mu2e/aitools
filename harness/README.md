@@ -10,6 +10,7 @@ logging -- without filling your home-directory quota.
 | [`claude-code/`](claude-code/README.md) | [Claude Code](https://code.claude.com) on litellm.fnal.gov (or your own Anthropic key / claude.ai subscription) | **most users** |
 | [`goose/`](goose/README.md) | [goose](https://github.com/block/goose) on vllm.fnal.gov, litellm.fnal.gov or ALCF | open models, no key needed for vllm |
 | [`claudebox/`](claudebox/README.md) | Claude Code in a locked-down container: one work directory, no home, no credentials | untrusted input, unattended agents |
+| [`hep-genesis/`](hep-genesis/README.md) | [hep-genesis](https://github.com/Mu2e/hep-genesis-agent): a research agent with a web UI, longer research runs, and automations | a browser instead of a terminal |
 | [`slack/`](slack/README.md) | The `askmu2e` Slack bot (a service, not something you install) | maintainers |
 
 ## Install (Claude Code, on a gpvm)
@@ -24,9 +25,6 @@ git clone https://github.com/Mu2e/aitools.git
 cd aitools/harness/claude-code
 . setup.sh
 ```
-
-> Until the harness PR is merged into Mu2e/aitools, clone the fork instead:
-> `git clone -b sc/harness https://github.com/corrodis/aitools.git`
 
 `setup.sh` installs Claude Code, asks which backend to use (choose **1**,
 litellm, and paste your key), and connects the Mu2e MCP servers. Then:
@@ -65,6 +63,32 @@ Updates then arrive with each publish, without a `git pull`. If you
 installed from a clone before, run setup once with `--refresh-settings` so
 your hooks point at the shared copy.
 
+## Install (hep-genesis, on a gpvm)
+
+You need: read access to the private repository
+Mu2e/hep-genesis-agent (members of the Mu2e GitHub organization have it;
+an ssh key on GitHub or `gh auth login`), and node >= 20 with npm. The
+default model needs no key.
+
+```bash
+cd /exp/mu2e/app/users/$USER
+git clone https://github.com/Mu2e/aitools.git     # skip if you have it already
+cd aitools/harness/hep-genesis
+. setup.sh
+hep-genesis-web
+```
+
+`setup.sh` installs hep-genesis (a few minutes) and creates your data
+folder. `hep-genesis-web` prints an `ssh -L` line to run on your laptop and
+a URL to open in your browser. In every new shell, first
+
+```bash
+. /exp/mu2e/app/users/$USER/aitools/harness/hep-genesis/env.sh
+```
+
+Upgrades, your own MCP servers and automations: see its
+[README](hep-genesis/README.md).
+
 ## Note: source, don't run
 
 Always `. setup.sh` / `. env.sh` (with the dot). `./setup.sh` installs, but
@@ -82,6 +106,10 @@ trouble):
 | `claude-code/log/usage.jsonl` | your session usage log |
 | `goose/` | goose binary, config, sessions, usage log |
 | `claudebox/` | home, runs and work dir of `claudebox` (Claude in a container) |
+| `hep-genesis/` | the hep-genesis install (releases, Python environment) |
+
+hep-genesis keeps your chats, settings and keys apart from its install, in
+`/exp/mu2e/data/users/$USER/hep-genesis-data/` (private to you).
 
 Inside a session the assistant is pointed away from your Kerberos ticket
 and `~/.ssh` (on purpose), and `ssh`, `kinit`, `sudo` and the like are
@@ -103,13 +131,15 @@ Claude Code itself updates automatically; re-running `setup.sh` picks up
 harness changes and re-syncs the MCP servers. Your `settings.json` is the
 exception: it is only written on first install. To take over a changed
 template (new hooks or deny rules), or after moving the clone:
-`. setup.sh --refresh-settings` (the old file is kept as a backup).
+`. setup.sh --refresh-settings` (the old file is kept as a backup). hep-genesis is upgraded with
+its `install.sh`: see its [README](hep-genesis/README.md#use-it-on-a-gpvm).
 
 ## Uninstall
 
 ```bash
 rm -rf /exp/mu2e/app/users/$USER/claude-code   # Claude Code + its config
 rm -rf /exp/mu2e/app/users/$USER/goose         # goose
+rm -rf /exp/mu2e/app/users/$USER/hep-genesis   # hep-genesis; your chats are in /exp/mu2e/data/users/$USER/hep-genesis-data
 rm -rf /exp/mu2e/app/users/$USER/aitools       # the scripts
 ```
 

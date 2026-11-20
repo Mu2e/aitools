@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Run one automation in the foreground, named as the web UI's log files name
+# it: <project>__<name>. For trying one by hand; the service runs them all
+# (systemd/hep-genesis-automations.service).
+#
+#   hep-genesis-watch dqm-alarm__dqm-alarms --once
+#   hep-genesis-watch dqm-alarm__dqm-alarms [more hep-genesis-agent options]
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+id="${1:?usage: hep-genesis-watch <project>__<name>}"; shift
+project="${id%%__*}" name="${id#*__}"
+if [[ "$project" == "$id" || -z "$project" || -z "$name" ]]; then
+  echo "hep-genesis-watch: '$id' is not <project>__<name>" >&2
+  exit 2
+fi
+exec "$here/hep-genesis-agent" --project "$project" --watch "$name" "$@"

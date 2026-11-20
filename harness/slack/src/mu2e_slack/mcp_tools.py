@@ -23,6 +23,7 @@ keeps a crashed or wedged child from outliving the call that hit it.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -32,7 +33,7 @@ import shutil
 import sys
 import time
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import aiohttp
 import httpx2
@@ -45,6 +46,42 @@ log = logging.getLogger(__name__)
 # Slack threads are chatty and tool output is not; a runaway result would
 # otherwise eat the whole context window in one call.
 MAX_RESULT_CHARS = 20000
+
+_IMAGE_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp"}
+
+
+@dataclass
+class ToolImage:
+    """An image a tool returned (MCP ImageContent), kept out of the text result.
+
+    Base64 as text is useless to a model -- it cannot see pixels in it, and
+    20k characters of it cost ~15k tokens -- so the image travels separately:
+    the Slack side posts it to the thread, and a vision model gets it as an
+    image block (see agent.Conversation).
+    """
+
+    data: bytes
+    mime: str
+    name: str
+
+    @property
+    def data_url(self) -> str:
+        return f"data:{self.mime};base64,{base64.b64encode(self.data).decode()}"
+
+
+def _image_name(arguments: dict, mime: str, n: int) -> str:
+    """A file name for an image, from the call's arguments when they name one."""
+    base = ""
+    for key in ("image_filename", "filename", "identifier", "name", "id"):
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            base = value.strip().rsplit("/", 1)[-1]
+            break
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", base) or "image"
+    ext = _IMAGE_EXT.get(mime, "png")
+    if not base.lower().endswith("." + ext):
+        base = f"{base}.{ext}"
+    return base if n == 0 else base.replace(f".{ext}", f"-{n + 1}.{ext}")
 
 
 @dataclass
@@ -249,7 +286,13 @@ class ToolRegistry:
             for tool in self.tools.values()
         ]
 
-    async def call(self, qualified: str, arguments: dict) -> str:
+    async def call(self, qualified: str, arguments: dict,
+                   images: "list[ToolImage] | None" = None) -> str:
+        """Call a tool and return its text for the model.
+
+        Images in the result are appended to ``images`` (when given) instead of
+        going into the text; the text says where they went.
+        """
         tool = self.tools.get(qualified)
         if tool is None:
             return f"Error: no such tool {qualified!r}."
@@ -267,7 +310,7 @@ class ToolRegistry:
                         qualified, time.monotonic() - started, reason)
             return f"Error calling {qualified}: {reason}"
 
-        text = _result_text(result)
+        text = _result_text(result, images, arguments)
         # A server that is broken usually reports it *in* a successful response
         # rather than by raising -- memory-mcp answers a dead connection pool
         # with a 30s "PoolTimeout" string, which looked like a healthy call in
@@ -328,10 +371,30 @@ def describe(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
 
 
-def _result_text(result) -> str:
-    """Flatten an MCP CallToolResult into something a chat model can read."""
+def _result_text(result, images: "list[ToolImage] | None" = None, arguments: dict | None = None) -> str:
+    """Flatten an MCP CallToolResult into something a chat model can read.
+
+    Image content is decoded into ``images`` and replaced by a short note:
+    never pasted into the text as base64.
+    """
     parts = []
+    n_images = 0
     for item in getattr(result, "content", []) or []:
+        if getattr(item, "type", None) == "image" and getattr(item, "data", None):
+            mime = getattr(item, "mimeType", None) or "image/png"
+            try:
+                data = base64.b64decode(item.data)
+            except (ValueError, TypeError):
+                parts.append(f"[an image ({mime}) that could not be decoded]")
+                continue
+            if images is None:
+                parts.append(f"[an image ({mime}, {len(data) // 1024} KB) -- not shown here]")
+                continue
+            name = _image_name(arguments or {}, mime, n_images)
+            n_images += 1
+            images.append(ToolImage(data=data, mime=mime, name=name))
+            parts.append(f"[image {name} ({len(data) // 1024} KB, {mime})]")
+            continue
         text = getattr(item, "text", None)
         parts.append(text if text is not None else str(item))
 

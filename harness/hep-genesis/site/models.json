@@ -1,0 +1,32 @@
+{
+  "_comment": "Model presets for the web UI's Models panel at Mu2e (HEP_MODEL_PRESETS_FILE, set by setup.sh). The backends the aitools harness offers (goose-model.sh): vllm.fnal.gov is the .env's default endpoint, so it is not repeated here. 'guide' is shown step by step in the form. 'chatgpt': false hides the ChatGPT-subscription section (not an option at Fermilab).",
+  "chatgpt": false,
+  "presets": [
+    {
+      "name": "Fermilab LiteLLM",
+      "baseUrl": "https://litellm.fnal.gov/v1",
+      "model": "",
+      "keyUrl": "https://llm-keys.fnal.gov",
+      "note": "litellm.fnal.gov: commercial and open models behind one Fermilab key.",
+      "guide": [
+        "Open https://llm-keys.fnal.gov and log in with your Fermilab account (Services username and password, or Kerberos).",
+        "Create a key there and copy it: it is shown only once.",
+        "Paste it as the API key below, then click Fetch models: a list means the key works.",
+        "Pick a model and Save. Make it the active endpoint with the radio button, or pin single stages to it."
+      ]
+    },
+    {
+      "name": "ALCF inference",
+      "baseUrl": "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
+      "model": "openai/gpt-oss-120b",
+      "keyUrl": "",
+      "note": "Argonne's open models (sophia, metis, minerva, tara). No key: a Globus login.",
+      "guide": [
+        "Click Log in with Globus below, open the link, and log in with your fnal.gov (or anl.gov) identity.",
+        "Copy the authorization code Globus shows and paste it into the login window.",
+        "Pick a cluster, then a model from its list, and Save.",
+        "ALCF asks for a fresh login every 30 days. If it refuses the login, log out at https://app.globus.org/logout and log in again."
+      ]
+    }
+  ]
+}

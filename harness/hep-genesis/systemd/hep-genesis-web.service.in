@@ -1,0 +1,41 @@
+# Rendered by install-unit.sh; do not edit the installed copy (re-run it).
+# The web UI on the service's data folder: its chats, its automations and what
+# they fired. Its own service, so restarting it does not interrupt the checks.
+[Unit]
+Description=hep-genesis web UI (port @WEB_PORT@)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# A --user service starts in $HOME; everything it writes belongs in the data folder.
+WorkingDirectory=@DATA_DIR@
+Environment=HOME=@HOME_DIR@
+Environment=HEP_PROJECTS_DIR=@DATA_DIR@/projects
+Environment=HEP_WORKSPACE_DIR=@DATA_DIR@/workspace
+Environment=HEP_STAGING_DIR=@DATA_DIR@/staging
+Environment=DISPATCH_ARTIFACT_DIR=@DATA_DIR@/artifacts
+Environment=HEP_SERVERS_FILE=@DATA_DIR@/servers.json
+Environment=HEP_CONTEXT_FILE=@DEPLOY_ROOT@/current/site/context.md
+Environment=HEP_MODEL_PRESETS_FILE=@DEPLOY_ROOT@/current/site/models.json
+# Secrets (model key, the service's Mikey key) are in this file, mode 600,
+# read by hep-genesis itself: never in the unit, never on a command line.
+Environment=HEP_ENV_FILE=@ENV_FILE@
+# No coding tasks from a shared web UI: a chat there must not run commands
+# as this account. The .env file wins over this line: install-unit.sh
+# refuses an .env that sets HEP_CODING.
+Environment=HEP_CODING=0
+Environment=PYTHONUNBUFFERED=1
+# Usage accounting after every turn: counts only, to <data>/log/usage.jsonl,
+# and to Postgres when the .env sets LOG_PG_DSN (and KRB5CCNAME).
+Environment="HEP_TURN_HOOK=@DEPLOY_ROOT@/current/venv/bin/python @DEPLOY_ROOT@/current/usage/log-session.py"
+ExecStart=@DEPLOY_ROOT@/current/bin/hep-genesis-web --port @WEB_PORT@ @WEB_ARGS@
+TimeoutStopSec=15
+# Runs started from the UI are processes of their own: restarting the web
+# server must not kill them.
+KillMode=process
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

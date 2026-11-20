@@ -36,8 +36,8 @@ ref) and restarting the unit. The env file lives at the deploy root, outside
 any one release, so it survives upgrades.
 
 Examples:
-  ./scripts/install.sh /exp/mu2e/app/home/mu2eai/slack/deploy v0.1.0
-  ./scripts/install.sh /exp/mu2e/app/home/mu2eai/slack/deploy main \
+  ./scripts/install.sh /exp/mu2e/app/users/mu2eai/slack v0.1.0
+  ./scripts/install.sh /exp/mu2e/app/users/mu2eai/slack main \
       https://github.com/Mu2e/aitools
 
 Notes:

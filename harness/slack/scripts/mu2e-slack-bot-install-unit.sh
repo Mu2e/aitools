@@ -27,7 +27,7 @@ hand-edited.
 
 Example:
   <venv>/bin/mu2e-slack-bot-install-unit.sh \
-      --env-file /exp/mu2e/app/home/mu2eai/slack/mu2e-slack-bot.env \
+      --env-file /exp/mu2e/app/users/mu2eai/slack/mu2e-slack-bot.env \
       -- --channel mu2e-ai
 USAGE
   exit 2

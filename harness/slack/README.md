@@ -37,6 +37,20 @@ into `<deploy-root>/releases/<ref>/.venv`, a `current` symlink, and a
   the bot to those channels (plus the home channel): mentions anywhere else
   are dropped. Empty (default) = any channel it has been invited to. DMs are
   governed by `--no-dm` only.
+- **Images.** An image a tool returns (`kb_get_image`) goes to the model as an
+  image block, so it can read the figure; the model never gets it as base64
+  text. A model that refuses images (a text-only one such as gpt-oss) gets a
+  note instead, for the rest of the thread. The model decides what the user
+  sees: the bot's own tool `slack__show_image` puts images from this turn's
+  tool results in the thread after the answer (needs the `files:write`
+  scope; without it the answer still posts and the bot logs it once), and an
+  image it only looked at stays out. An image stays in the model's context,
+  and can still be shown, for two more messages, or until the thread has been
+  idle longer than the prompt cache lives (5 min); then it becomes a note
+  naming the file, and the model fetches it again if needed. Up to 6 images
+  per turn are posted and 4 (of at most 3.5 MB) shown to the model.
+  `--no-post-images` / `MU2E_SLACK_POST_IMAGES=0` and `--no-vision` /
+  `MU2E_SLACK_VISION=0` turn either off.
 - **One thread, one conversation.** Thread state lives in memory and is
   dropped after `--idle-timeout`. The durable artifact is the usage record,
   not the transcript.
@@ -114,13 +128,18 @@ Then invite the bot to its channel: `/invite @mu2e-ai`.
 ## Install
 
 ```bash
-./scripts/install.sh /exp/mu2e/app/home/mu2eai/slack/deploy v0.1.0
+./scripts/install.sh --with-slack-mcp /exp/mu2e/app/users/mu2eai/slack v0.1.0
 ```
+
+`--with-slack-mcp` installs the Slack MCP server into the same venv; the
+production unit spawns it with `--stdio-server slack=slack-mcp-stdio`. An
+upgrade is the same command with the new ref, then `systemctl --user restart
+mu2e-slack-bot`: the env file and the unit stay where they are.
 
 Then, as the service account:
 
 ```bash
-deploy=/exp/mu2e/app/home/mu2eai/slack/deploy
+deploy=/exp/mu2e/app/users/mu2eai/slack
 cp $deploy/current/.venv/share/mu2e-slack-bot/mu2e-slack-bot.env.example $deploy/mu2e-slack-bot.env
 $EDITOR $deploy/mu2e-slack-bot.env && chmod 600 $deploy/mu2e-slack-bot.env
 
