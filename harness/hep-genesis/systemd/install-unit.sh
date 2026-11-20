@@ -13,11 +13,13 @@
 # An edited automation needs no restart: it loads its file again within
 # seconds. One switched off ("enabled": false) ends the same way.
 #
-# The unit is rendered into this release (share/) and registered with
-# `systemctl --user link`, so ~/.config/systemd holds only a symlink. Its
+# The unit is rendered into <deploy-root>/share/ and registered with
+# `systemctl --user link`, so ~/.config/systemd holds only a symlink. It is
+# not kept in a release: releases are pruned, and a link into a pruned one
+# would leave the service unloadable at the next reload or reboot. Its
 # command points at <deploy-root>/current: a new release takes effect on a
 # restart. Re-run this script after an install whenever the unit template or
-# these options change, and before the release the link points into is pruned.
+# these options change.
 #
 #   --data-dir <path>   REQUIRED, absolute. The service's data folder
 #                       (projects/, workspace/, servers.json, models.json);
@@ -98,7 +100,7 @@ mkdir -p "$data" "$home" "$data/projects" "$data/workspace" "$data/staging" "$da
 chmod 700 "$data"
 [[ -f "$data/servers.json" ]] || { cp "$root/current/site/servers.json" "$data/servers.json"; chmod 600 "$data/servers.json"; echo "Created $data/servers.json"; }
 
-share="$(cd "$here/.." && pwd -P)/share"
+share="$root/share"
 mkdir -p "$share"
 printf '%s\n' "$unit" > "$share/hep-genesis-automations.service"
 # The unit of earlier releases: one instance per automation.

@@ -5,7 +5,7 @@
 #   harness/hep-genesis/install.sh DEST [--ref REF] [--no-ui] [--keep N]
 #   harness/hep-genesis/install.sh DEST --src CHECKOUT      (to develop hep-genesis)
 #
-#   DEST/releases/<commit>/   src/      the checkout (no .git), with the built web UI
+#   DEST/releases/<release>/  src/      the checkout (no .git), with the built web UI
 #                             venv/     Python environment (uv)
 #                             bin/      hep-genesis-agent, -web, -service, hep-genesis-watch,
 #                                       hep-genesis-add-automation
@@ -13,6 +13,14 @@
 #                             usage/    the usage logger (log-session.py)
 #                             VERSION   hep-genesis commit + aitools commit
 #   DEST/current              -> the release just installed
+#
+# <release> names what the release was built from: the hep-genesis commit,
+# the last aitools commit that changed this folder (its files go into the
+# release: site/, automations/, systemd/, the logger), and "-noui" without
+# the web UI. Asking again for one
+# that is there makes it current without building; a change of either
+# commit, or of --no-ui, is a new release. With uncommitted changes in this
+# folder the name ends in "-local" and it is built again every time.
 #   DEST/python/              the Python uv downloaded (shared by the releases)
 #   DEST/bin/uv               uv itself (copied from PATH, or downloaded)
 #
@@ -94,6 +102,22 @@ fi
 [[ -x "$dest/bin/uv" ]] || { echo "ERROR: no uv in $dest/bin (install it there, or put uv on PATH)" >&2; exit 2; }
 export PATH="$dest/bin:$PATH"
 
+# The aitools commit this folder is at: part of the release's name, and in
+# its VERSION. A deployed copy of the harness has no .git: deploy.sh wrote
+# the commit to harness/VERSION. Not known, or with uncommitted changes in
+# this folder: "local", which is never taken for an earlier build.
+aitools="$(git -C "$here" rev-parse --short=10 HEAD 2>/dev/null || true)"
+[[ -n "$aitools" ]] || aitools="$(head -c 10 "$here/../VERSION" 2>/dev/null || true)"
+# For the name: the last commit that changed what goes into a release, so
+# that unrelated aitools commits do not make a new one.
+aitools_id="$(git -C "$here" log -1 --format=%h --abbrev=7 -- "$here" "$here/../usage/usage_record.py" 2>/dev/null || true)"
+aitools_id="${aitools_id:-${aitools:0:7}}"
+if [[ -z "$aitools" ]]; then
+  aitools="unknown"; aitools_id="local"
+elif [[ -n "$(git -C "$here" status --porcelain -- "$here" 2>/dev/null)" ]]; then
+  aitools="$aitools+local"; aitools_id="$aitools_id-local"
+fi
+
 tmp="$(mktemp -d "$dest/.install.XXXXXX")"
 release="" done_ok=0
 cleanup() {
@@ -147,16 +171,21 @@ else
   fi
   git -C "$tmp/src" checkout -q --detach FETCH_HEAD
   commit="$(git -C "$tmp/src" rev-parse HEAD)"
-  short="${commit:0:10}"
+  short="${commit:0:10}-${aitools_id}"
+  [[ "$ui" == 1 ]] || short="$short-noui"
   rm -rf "$tmp/src/.git"
 
-  if [[ -e "$dest/releases/$short" ]]; then
-    # Installed before: make it the current one (back from a development
-    # install, or from a roll-back). Nothing is rebuilt.
+  if [[ -e "$dest/releases/$short" && "$aitools_id" != *local ]]; then
+    # Built before from the same two commits: make it the current one (back
+    # from a development install, or from a roll-back). Nothing is rebuilt.
     ln -sfn "releases/$short" "$dest/current"
     echo "      $short is installed already: $dest/current -> releases/$short"
     echo "      To build it again, remove $dest/releases/$short first (not while something runs from it)."
     exit 0
+  fi
+  if [[ -e "$dest/releases/$short" ]]; then
+    echo "      this folder has uncommitted changes: building $short again"
+    rm -rf "$dest/releases/$short"
   fi
   release="$dest/releases/$short"
   mkdir -p "$dest/releases"
@@ -218,8 +247,6 @@ cp "$here/bin/hep-genesis-watch" "$here/bin/hep-genesis-add-automation" "$releas
 chmod 755 "$release/bin/hep-genesis-watch" "$release/bin/hep-genesis-add-automation"
 # Readable by other accounts whatever the modes in the aitools checkout were.
 chmod -R u+rwX,go+rX,go-w "$release/site" "$release/automations" "$release/systemd" "$release/env.sh" "$release/bin" "$release/usage"
-aitools="$(git -C "$here" rev-parse --short=10 HEAD 2>/dev/null || echo unknown)"
-[[ -z "$(git -C "$here" status --porcelain -- "$here" 2>/dev/null)" ]] || aitools="$aitools+local"
 printf 'hep-genesis %s\naitools %s\ninstalled %s\n' "$commit" "$aitools" "$(date -u +%Y-%m-%dT%H:%MZ)" > "$release/VERSION"
 "$release/bin/hep-genesis-agent" --help >/dev/null   # the install imports and runs
 

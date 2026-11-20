@@ -41,12 +41,7 @@ found:
 Mu2e/hep-genesis-agent, readable by every member of the Mu2e GitHub
 organization, so git has to know who you are on GitHub: an ssh key
 registered there (`ssh -T git@github.com`), or the gh CLI (`gh auth login`).
-The web UI is built with node >= 20 and npm. Without those, use an install
-somebody else built, with your own data folder:
-
-```bash
-. <their install>/current/env.sh
-```
+The web UI is built with node >= 20 and npm.
 
 **Upgrade.** `setup.sh` leaves an existing install alone. To move to the
 commit the harness now pins:

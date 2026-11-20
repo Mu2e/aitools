@@ -29,13 +29,16 @@ harness/hep-genesis/install.sh <install>            # the pinned commit
 harness/hep-genesis/install.sh <install> --no-ui    # automations only: no node needed
 ```
 
-This creates `<install>/releases/<commit>/` and points `<install>/current`
-at it; the newest two releases are kept. The install is self-contained: it
+This creates `<install>/releases/<release>/` and points `<install>/current`
+at it; the newest two releases are kept. A release is named after the
+hep-genesis commit and the last aitools commit that changed this folder, so
+a change of the harness alone (a template, a unit, the logger) is a new
+release too; asking for one that is there already just makes it current. The install is self-contained: it
 carries its own copy of `env.sh`, `site/`, `automations/` and `systemd/`,
 and `VERSION` names both commits. To roll back, repoint `current`:
 
 ```bash
-ln -sfn releases/<older commit> <install>/current
+ln -sfn releases/<older release> <install>/current
 ```
 
 To upgrade, set `ref=` in `hep-genesis.pin` to the new commit, commit that,
@@ -112,9 +115,12 @@ journalctl --user -u hep-genesis-web -n 20 -o cat
 - **It listens on the machine itself only** (127.0.0.1), on port 8200. MCP
   servers use 80XX there.
 - **`--web-no-token`: no login.** Everyone who can log in to the machine can
-  use it, and acts as the service account in it: chats, automations, MCP
-  servers, model settings. Leave the option out to keep the token; the link
-  with it is then in the journal, new at every start.
+  use it, and acts as the service account in it: chats, automations, model
+  settings, and MCP servers. Adding a stdio server there starts a command as
+  the service account, so this is command access for every local account,
+  whatever `HEP_CODING` says. Use it only where that is acceptable; leave the
+  option out to keep the token (the link with it is then in the journal, new
+  at every start).
 - **No coding tasks**, as for the automations: a chat there cannot run
   commands. `install-unit.sh` refuses an `.env` that sets `HEP_CODING`.
 - **Restarting it does not touch the automations**, and the other way round.

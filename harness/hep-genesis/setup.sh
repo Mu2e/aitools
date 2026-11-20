@@ -60,23 +60,40 @@ if ! source "$hg_setup_dir/env.sh"; then
 fi
 
 # Your data folder, with the Mu2e settings on first use. Private: the .env
-# holds keys.
+# holds keys. An existing folder is made private too, should it not be.
+_hg_fail() { echo "Error: $*" >&2; unset hg_setup_dir; unset -f _hg_fail; }
 if [[ ! -d "$HG_DATA_DIR" ]]; then
   if ! ( umask 077 && mkdir -p "$HG_DATA_DIR" ); then
-    echo "Error: cannot create $HG_DATA_DIR (set HG_DATA_DIR)" >&2
-    unset hg_setup_dir
+    _hg_fail "cannot create $HG_DATA_DIR (set HG_DATA_DIR)"
+    return 1 2>/dev/null || exit 1
+  fi
+elif [[ -n "$(find "$HG_DATA_DIR" -maxdepth 0 -perm /077 2>/dev/null)" ]]; then
+  if chmod go-rwx "$HG_DATA_DIR"; then
+    echo "Made $HG_DATA_DIR private (it was open to others; it holds your chats and keys)"
+  else
+    _hg_fail "$HG_DATA_DIR is open to other users and could not be made private"
     return 1 2>/dev/null || exit 1
   fi
 fi
-( umask 077 && mkdir -p "$HEP_PROJECTS_DIR" "$HEP_WORKSPACE_DIR" "$HEP_STAGING_DIR" "$DISPATCH_ARTIFACT_DIR" )
+if ! ( umask 077 && mkdir -p "$HEP_PROJECTS_DIR" "$HEP_WORKSPACE_DIR" "$HEP_STAGING_DIR" "$DISPATCH_ARTIFACT_DIR" ); then
+  _hg_fail "cannot create the folders in $HG_DATA_DIR"
+  return 1 2>/dev/null || exit 1
+fi
 if [[ ! -e "$HEP_ENV_FILE" ]]; then
-  ( umask 077 && cp "$hg_setup_dir/site/env.template" "$HEP_ENV_FILE" ) \
-    && echo "Created $HEP_ENV_FILE (default model: vllm.fnal.gov, no key needed)"
+  if ! ( umask 077 && cp "$hg_setup_dir/site/env.template" "$HEP_ENV_FILE" ); then
+    _hg_fail "cannot create $HEP_ENV_FILE"
+    return 1 2>/dev/null || exit 1
+  fi
+  echo "Created $HEP_ENV_FILE (default model: vllm.fnal.gov, no key needed)"
 fi
 if [[ ! -e "$HEP_SERVERS_FILE" ]]; then
-  ( umask 077 && cp "$hg_setup_dir/site/servers.json" "$HEP_SERVERS_FILE" ) \
-    && echo "Created $HEP_SERVERS_FILE (the Mu2e MCP servers)"
+  if ! ( umask 077 && cp "$hg_setup_dir/site/servers.json" "$HEP_SERVERS_FILE" ); then
+    _hg_fail "cannot create $HEP_SERVERS_FILE"
+    return 1 2>/dev/null || exit 1
+  fi
+  echo "Created $HEP_SERVERS_FILE (the Mu2e MCP servers)"
 fi
+unset -f _hg_fail
 
 echo
 echo "hep-genesis is ready. Data: $HG_DATA_DIR"
