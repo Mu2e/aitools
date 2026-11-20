@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Render the systemd --user unit of the usage log service into this
-# install's share/ directory and register it (systemctl --user link), as the
-# MCP servers' install-unit scripts do.
+# Render the systemd --user unit of the usage log service into
+# <deploy-root>/share/ and register it (systemctl --user link).
 #
 #   usage-server-install-unit.sh --mikey-keys-file PATH --krb5-ccname CCNAME
 #                                [--dsn DSN] [--port PORT] [--host HOST] [--no-enable]
@@ -53,7 +52,9 @@ deploy_root="${venv_dir%%/releases/*}"
 exec_start="$deploy_root/current/.venv/bin/usage-server"
 [[ -x "$exec_start" ]] || exec_start="$bin_dir/usage-server"
 
-share="$venv_dir/share/usage-server"
+# In the deploy root, not in a release: the systemd link then stays valid
+# whatever happens to the releases.
+share="$deploy_root/share"
 mkdir -p "$share"
 unit="$share/usage-server.service"
 {
@@ -75,7 +76,7 @@ unit="$share/usage-server.service"
   echo "WantedBy=default.target"
 } > "$unit"
 echo "Wrote $unit"
-systemctl --user link "$unit"
+systemctl --user link --force "$unit"      # --force: replace the link of an earlier registration
 systemctl --user daemon-reload
 if [[ "$enable" == 1 ]]; then
   systemctl --user enable --now usage-server
