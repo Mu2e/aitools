@@ -1361,15 +1361,20 @@ instance_running() {
 }
 
 # apptainer starts an instance through the user's systemd (for its cgroup),
-# which it reaches over the session bus. A shell that has lost
-# XDG_RUNTIME_DIR or DBUS_SESSION_BUS_ADDRESS (tmux or screen started
-# elsewhere, su, a shell inside an agent session) gets "failed to connect to
-# dbus ... could not detect the OwnerUID". When the bus is there, say where.
+# which it reaches over that systemd's bus, $XDG_RUNTIME_DIR/bus. It takes
+# the address from DBUS_SESSION_BUS_ADDRESS, though, and that is often
+# something else: unset (tmux or screen started elsewhere, su, a shell
+# inside an agent session), or the bus of a desktop session started with
+# dbus-launch ("unix:abstract=/tmp/dbus-..."), which has no systemd behind
+# it. Either way: "failed to connect to dbus ... could not detect the
+# OwnerUID". So when the systemd bus is there, it is named for this script's
+# own commands, whatever the shell said.
 session_bus_env() {
   local rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+  [ -S "$rt/bus" ] || rt=/run/user/$(id -u)
   [ -S "$rt/bus" ] || return 0
   export XDG_RUNTIME_DIR=$rt
-  export DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=$rt/bus}
+  export DBUS_SESSION_BUS_ADDRESS=unix:path=$rt/bus
 }
 
 cmd_agent() {
