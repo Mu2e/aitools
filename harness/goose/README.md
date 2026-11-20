@@ -13,7 +13,7 @@ On a gpvm (see also the overview in [`../README.md`](../README.md)):
 
 ```bash
 cd /exp/mu2e/app/users/$USER
-git clone https://github.com/Mu2e/aitools.git     # until merged: -b sc/harness https://github.com/corrodis/aitools.git
+git clone https://github.com/Mu2e/aitools.git
 cd aitools/harness/goose
 . setup.sh           # source it, so goose is also on PATH in this shell
 ```

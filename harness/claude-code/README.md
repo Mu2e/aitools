@@ -16,7 +16,7 @@ Node.js needed.
 
 ```bash
 cd /exp/mu2e/app/users/$USER
-git clone https://github.com/Mu2e/aitools.git     # until merged: -b sc/harness https://github.com/corrodis/aitools.git
+git clone https://github.com/Mu2e/aitools.git
 cd aitools/harness/claude-code
 . setup.sh
 ```
