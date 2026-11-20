@@ -1,49 +1,11 @@
 {
-  "name": "dqm-alarms",
-  "interval_s": 300,
-  "servers": [
-    "dqm"
-  ],
-  "probes": {
-    "alarms": {
-      "tool": "list_alarms",
-      "args": {
-        "open_only": true,
-        "limit": 100
-      }
-    }
-  },
-  "rules": [
-    {
-      "rule": "items",
-      "probe": "alarms",
-      "path": "results",
-      "key": "aid",
-      "fields": [
-        "level"
-      ],
-      "label": "alarm",
-      "show": [
-        "source",
-        "subject",
-        "level"
-      ]
-    }
-  ],
-  "chat": {
-    "mode": "quick",
+  "every_s": 300,
+  "check": {"server": "dqm", "tool": "list_alarms", "args": {"open_only": true, "limit": 100}},
+  "trigger": {"type": "list", "id": "aid", "changes": ["level"], "label": "alarm", "show": ["source", "subject", "level"]},
+  "action": {
     "max_per_hour": 4,
-    "prompt": "A DQM alarm needs a look: {title}\n\nThe alarm episode as DQM reports it:\n{item}\n\nInvestigate it with the dqm, runs and ecl tools:\n1. get_alarm_causes for this aid: which metrics and intervals fired, at what level.\n2. For each metric, its recent values against its limits (query_metrics on numbers and limits): a step, a drift, or one outlier? Since when?\n3. What else happened around that time: runs (list_runs) and logbook entries (ecl) for the subsystem.\n\nThen write a short summary for the shifter: what is out of range and by how much, since when, a likely cause only if the data shows one (say so if it doesn't), and what to check first. Do not guess.",
-    "servers": [
-      "dqm",
-      "runs",
-      "ecl",
-      "kb"
-    ],
-    "budget": {
-      "minutes": 15,
-      "tool_calls": 25,
-      "tokens": 400000
-    }
+    "servers": ["dqm", "runs", "ecl", "kb"],
+    "budget": {"minutes": 15, "tool_calls": 25, "tokens": 400000},
+    "prompt": "A DQM alarm needs a look: {title}\n\nThe alarm episode as DQM reports it:\n{item}\n\nInvestigate it with the dqm, runs and ecl tools:\n1. get_alarm_causes for this aid: which metrics and intervals fired, at what level.\n2. For each metric, its recent values against its limits (query_metrics on numbers and limits): a step, a drift, or one outlier? Since when?\n3. What else happened around that time: runs (list_runs) and logbook entries (ecl) for the subsystem.\n\nThen write a short summary for the shifter: what is out of range and by how much, since when, a likely cause only if the data shows one (say so if it doesn't), and what to check first. Do not guess."
   }
 }

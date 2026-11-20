@@ -248,7 +248,7 @@ Notes:
 - **Chats outlive the automations.** They are processes of their own
   (`KillMode=process`): restarting the service does not stop an investigation.
 - **A slow server.** A check that gets no answer is given up after 120 s
-  (`"timeout_s"` in the check, under `probes`), reported once as an event, and
+  (`"timeout_s"` in the `check`), reported once as an event, and
   tried again at the next interval. The other automations are not held up.
 - **One failing takes all down, briefly.** An unexpected error in one
   automation ends the process, and systemd starts it again after a minute. A
@@ -270,3 +270,41 @@ Notes:
 Add one to your own data folder with
 `hep-genesis-add-automation <project>/<name>.json`, then start it in the web
 UI under Automations, where its prompt and settings can be edited.
+
+### What an automation file says
+
+Three things: what to check, when that triggers, and the action then taken.
+The DQM template without its prompt:
+
+```json
+{
+  "every_s": 300,
+  "check":   {"server": "dqm", "tool": "list_alarms", "args": {"open_only": true, "limit": 100}},
+  "trigger": {"type": "list", "id": "aid", "changes": ["level"]},
+  "action":  {"servers": ["dqm", "runs", "ecl", "kb"],
+              "budget": {"minutes": 15, "tool_calls": 25, "tokens": 400000},
+              "prompt": "A DQM alarm needs a look: {title} ..."}
+}
+```
+
+- **`check`**: the MCP tool called every `every_s` seconds, with these
+  arguments, as a chat would call it.
+- **`trigger`**: when it fires. Its `type`:
+
+  | `type` | Fires when | Settings |
+  |---|---|---|
+  | `list` | the result's list has a new item, or an item's `changes` fields changed | `id` (what tells items apart), `changes` |
+  | `value` | a value passes a threshold, for some time when asked | `path`, `op`, `value`, `for_s` |
+  | `time` | once a day (needs no `check`) | `at`, `days` |
+  | `change` | anything in the result differs from the check before | `path` |
+
+- **`action`**: the chat it starts: the `prompt`, the MCP `servers` the chat
+  may use, its `budget`, and optionally `project`, `mode`, `endpoint`/`model`
+  and `max_per_hour` (4).
+
+For more than one, `checks` (named) and `triggers` (a list) take the place of
+`check` and `trigger`; each trigger then names its check and may have its own
+`action`. The full description is at the top of
+`backend/src/hep_genesis/agent/watch.py` in hep-genesis-agent. Files in the
+earlier names (`probes`, `rules`, `chat`) still work; saving one in the web
+form rewrites it in these names.
