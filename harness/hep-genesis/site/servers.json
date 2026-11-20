@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "auth": {
+    "mikey": {
+      "type": "bearer",
+      "token": {
+        "env": "MIKEY_TOKEN",
+        "file": "/exp/mu2e/app/users/$USER/mikey_token",
+        "command": "/cvmfs/mu2e.opensciencegrid.org/bin/getMu2eKey"
+      }
+    }
+  },
+  "registries": [
+    {
+      "url": "http://mu2eaigpvm01.fnal.gov:8000/registry",
+      "token_auth": "mikey"
+    }
+  ],
+  "registry_enabled": {
+    "kb": true,
+    "dqm": true,
+    "metacat": true,
+    "inspirehep": true,
+    "arxiv": true,
+    "ecl": true,
+    "runs": true,
+    "memory": true
+  },
+  "servers": [
+    {
+      "name": "hep-research-aid",
+      "transport": "stdio",
+      "module": "hep_genesis.domain.mcp_server"
+    },
+    {
+      "name": "alcf-tools",
+      "transport": "stdio",
+      "module": "hep_genesis.iri.alcf.mcp_server",
+      "enabled": false
+    },
+    {
+      "name": "nersc-tools",
+      "transport": "stdio",
+      "module": "hep_genesis.iri.nersc.mcp_server",
+      "enabled": false
+    }
+  ]
+}

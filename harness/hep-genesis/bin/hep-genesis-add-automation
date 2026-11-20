@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Put an automation template into a project of the current data folder
+# (HEP_PROJECTS_DIR), creating the project when it is new:
+#
+#   hep-genesis-add-automation <template.json> [project]
+#   hep-genesis-add-automation --list
+#
+# The project defaults to the template's folder name, as in
+# <install>/automations/<project>/<name>.json. An automation of that name
+# already in the project is left alone (pass --force to replace it). It is
+# not started: use the web UI's Automations panel, or, where the service runs
+# them all, `systemctl --user restart hep-genesis-automations`.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+templates="$(dirname "$here")/automations"
+force=0
+[[ "${1:-}" == "--force" ]] && { force=1; shift; }
+if [[ "${1:-}" == "--list" ]]; then
+  ( cd "$templates" && ls -1 */*.json )
+  exit 0
+fi
+template="${1:?usage: hep-genesis-add-automation [--force] <template.json> [project]   (or --list)}"
+[[ -f "$template" ]] || template="$templates/$template"
+[[ -f "$template" ]] || { echo "no template $1 (see --list)" >&2; exit 2; }
+project="${2:-$(basename "$(cd "$(dirname "$template")" && pwd -P)")}"
+: "${HEP_PROJECTS_DIR:?HEP_PROJECTS_DIR is not set: source env.sh of the harness first}"
+exec "$here/../venv/bin/python" - "$template" "$project" "$force" <<'PY'
+import shutil, sys
+from pathlib import Path
+
+from hep_genesis import projects
+from hep_genesis.agent import watch
+
+template, name, force = Path(sys.argv[1]), sys.argv[2], sys.argv[3] == "1"
+watch.load_spec(template)  # a bad template stops here, with its reason
+meta = projects.get_project(name) or projects.get_project(projects.slugify(name)) or projects.create_project(name)
+dest = projects.project_dir(meta) / "watches" / template.name
+dest.parent.mkdir(parents=True, exist_ok=True)
+if dest.exists() and not force:
+    print(f"{dest} exists already: left as it is (--force replaces it)")
+else:
+    shutil.copyfile(template, dest)
+    print(f"installed {dest}")
+print(f"automation id: {meta['slug']}/{dest.stem}   (by hand: hep-genesis-watch {meta['slug']}__{dest.stem} --once)")
+PY
