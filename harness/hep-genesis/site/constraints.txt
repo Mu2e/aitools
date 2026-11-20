@@ -1,0 +1,6 @@
+# Local pins for uv (the repo has none). langchain-mcp-adapters 0.3.1 has no
+# upper bound on mcp but breaks on mcp 2.x (ImportError: RequestContext);
+# 0.3.2 declares mcp<2. pip resolves to that pair on its own, uv does not.
+mcp<2
+# ...and make uv take that 0.3.2, the pair upstream CI (pip) actually tests.
+langchain-mcp-adapters>=0.3.2

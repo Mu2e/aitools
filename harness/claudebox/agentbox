@@ -30,7 +30,9 @@
 #
 set -uo pipefail
 
-PROG=${0##*/}
+# The name used in messages and hints. A front end that calls this script
+# under another command name (the harness's `claudebox`) says so here.
+PROG=${AGENTBOX_PROG:-${0##*/}}
 VERSION=0.1+agentbox-example
 
 # Which agent runs in the box. Everything that depends on it lives in the
@@ -409,7 +411,7 @@ have_api_key() {
 # predicting rather than debugging. Re-launching re-copies and fixes it.
 warn_oauth_expiry() {
   local note
-  note=$(python3 - "$1" 2>/dev/null <<'PY'
+  note=$(python3 -I - "$1" 2>/dev/null <<'PY'
 import json, sys, time
 try:
     d = json.load(open(sys.argv[1]))["claudeAiOauth"]
@@ -451,6 +453,10 @@ sync_credentials() {
 # trusted so neither mode stops on the folder-trust dialog.
 claude_seed_home() {
   local workdir=$1
+  # A link here (left from inside the box) would send what is written below
+  # to somewhere on the host.
+  [ -L "$SBOX_HOME/.claude" ] && rm -f "$SBOX_HOME/.claude"
+  [ -L "$SBOX_HOME/.claude/settings.json" ] && rm -f "$SBOX_HOME/.claude/settings.json"
   mkdir -p "$SBOX_HOME/.claude" || die "cannot create $SBOX_HOME/.claude"
   chmod 700 "$SBOX_HOME/.claude" 2>/dev/null
 
@@ -467,7 +473,7 @@ claude_seed_home() {
   CB_HOST_JSON=$HOME/.claude.json \
   CB_BOX_JSON="$SBOX_HOME/.claude.json:$SBOX_HOME/.claude/.claude.json" \
   CB_WORKDIR=$workdir \
-  python3 - <<'PY' || die "cannot write the sandbox .claude.json"
+  python3 -I - <<'PY' || die "cannot write the sandbox .claude.json"
 import json, os
 
 host_path = os.environ["CB_HOST_JSON"]
@@ -508,8 +514,12 @@ for box_path in targets:
     proj.setdefault("allowedTools", [])
     proj.setdefault("history", [])
 
+    # The box home is writable from inside the box: a link left where the
+    # temporary file goes must not be followed to a file on the host.
     tmp = box_path + ".tmp"
-    with open(tmp, "w") as f:
+    if os.path.lexists(tmp):
+        os.unlink(tmp)
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "w") as f:
         json.dump(cfg, f, indent=2)
     os.replace(tmp, box_path)
     os.chmod(box_path, 0o600)
@@ -531,7 +541,12 @@ goose_host_config_dir() {
 }
 
 goose_seed_home() {
-  local box=$SBOX_HOME/.config/goose host
+  local box=$SBOX_HOME/.config/goose host d
+  # A link where a folder should be (left from inside the box) would send
+  # what is written here to somewhere on the host.
+  for d in "$SBOX_HOME/.config" "$box"; do
+    [ -L "$d" ] && rm -f "$d"
+  done
   ( umask 077; mkdir -p "$box" ) || die "cannot create $box"
 
   if ! host=$(goose_host_config_dir); then
@@ -541,7 +556,7 @@ goose_seed_home() {
       "Set goose up on the host first (aitools/harness/goose/setup.sh)."
   fi
 
-  CB_SRC=$host/config.yaml CB_DST=$box/config.yaml python3 - <<'PY' \
+  CB_SRC=$host/config.yaml CB_DST=$box/config.yaml python3 -I - <<'PY' \
     || die "cannot write the sandbox goose config (needs python3 with PyYAML)"
 import os, yaml
 
@@ -552,8 +567,11 @@ cfg["extensions"] = {
     if isinstance(ext, dict) and ext.get("type") in ("platform", "builtin")
 }
 dst = os.environ["CB_DST"]
+# No link left in the box home is followed to a file on the host.
 tmp = dst + ".tmp"
-with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+if os.path.lexists(tmp):
+    os.unlink(tmp)
+with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "w") as f:
     yaml.safe_dump(cfg, f, sort_keys=False)
 os.replace(tmp, dst)
 PY
@@ -652,7 +670,7 @@ write_env_file() {
 # tell. Bearer tokens are short-lived and an expired one fails in ways that
 # look nothing like "your token expired", so it is worth saying up front.
 jwt_expiry_note() {
-  python3 - "$1" 2>/dev/null <<'PY'
+  python3 -I - "$1" 2>/dev/null <<'PY'
 import base64, json, sys, time
 try:
     payload = open(sys.argv[1]).read().strip().split(".")[1]
@@ -852,7 +870,7 @@ stage_auth() {
   if [ -n "$OPT_MCP" ]; then
     [ -r "$OPT_MCP" ] || die_hint "cannot read the MCP config: $OPT_MCP" \
       "Give --mcp a JSON file with an \"mcpServers\" object."
-    python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$OPT_MCP" 2>/dev/null \
+    python3 -I -c 'import json,sys; json.load(open(sys.argv[1]))' "$OPT_MCP" 2>/dev/null \
       || die_hint "--mcp: $OPT_MCP is not valid JSON" \
            "Check it with:  python3 -m json.tool $OPT_MCP"
     AUTH_BINDS+=("$(readlink -f "$OPT_MCP"):$MCP_IN:ro")
@@ -1024,7 +1042,7 @@ goose_env() {
   if [ "$found" -eq 0 ] && host=$(goose_host_config_dir) && [ -r "$host/secrets.yaml" ]; then
     while IFS='=' read -r name value; do
       [ -n "$name" ] && add_secret "$name" "$value"
-    done < <(python3 - "$host/secrets.yaml" 2>/dev/null <<'PY'
+    done < <(python3 -I - "$host/secrets.yaml" 2>/dev/null <<'PY'
 import re, sys, yaml
 for k, v in (yaml.safe_load(open(sys.argv[1])) or {}).items():
     if isinstance(v, str) and v and "\n" not in v and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(k)):
@@ -1047,7 +1065,9 @@ GOOSE_MCP_PY=$(cat <<'PY'
 import json, os, re, sys, yaml
 
 box_cfg, mcp_file, out = sys.argv[1:4]
-values = dict(os.environ)
+# Only what was passed for this run (--secret and the imports): a ${NAME} in
+# the file must not pull an unrelated token out of the caller's environment.
+values = {}
 for line in sys.stdin:
     name, sep, value = line.rstrip("\n").partition("=")
     if sep:
@@ -1085,7 +1105,7 @@ goose_mcp_config() {
   local priv=$1/.agentbox
   ( umask 077; mkdir -p "$priv/goose" ) || die "cannot create $priv"
   printf '%s\n' ${SECRETS+"${SECRETS[@]}"} \
-    | python3 -c "$GOOSE_MCP_PY" "$SBOX_HOME/.config/goose/config.yaml" "$OPT_MCP" "$priv/goose/config.yaml" \
+    | python3 -I -c "$GOOSE_MCP_PY" "$SBOX_HOME/.config/goose/config.yaml" "$OPT_MCP" "$priv/goose/config.yaml" \
     || die "cannot write the goose MCP configuration"
   ENV_ARGS+=(--env "XDG_CONFIG_HOME=/tmp/.agentbox")
 }
@@ -1264,7 +1284,9 @@ post_hook() {       # mode workdir since status [name rundir]
     return 0
   fi
   post_hook_env "$1" "$2" "$3" "${5:-}" "${6:-}"
-  AGENTBOX_STATUS=$4 "$AGENTBOX_POST_HOOK" \
+  # With Ctrl-C ignored: a session is often left by pressing it twice, and
+  # the second one would otherwise end the hook before it has logged.
+  ( trap '' INT; AGENTBOX_STATUS=$4 exec "$AGENTBOX_POST_HOOK" ) \
     || warn "the post hook failed: $AGENTBOX_POST_HOOK"
   return 0
 }
@@ -1336,6 +1358,23 @@ instance_name() { printf 'cbx-%s\n' "$1"; }
 
 instance_running() {
   apptainer instance list 2>/dev/null | awk -v n="$1" 'NR>1 && $1==n {found=1} END{exit !found}'
+}
+
+# apptainer starts an instance through the user's systemd (for its cgroup),
+# which it reaches over that systemd's bus, $XDG_RUNTIME_DIR/bus. It takes
+# the address from DBUS_SESSION_BUS_ADDRESS, though, and that is often
+# something else: unset (tmux or screen started elsewhere, su, a shell
+# inside an agent session), or the bus of a desktop session started with
+# dbus-launch ("unix:abstract=/tmp/dbus-..."), which has no systemd behind
+# it. Either way: "failed to connect to dbus ... could not detect the
+# OwnerUID". So when the systemd bus is there, it is named for this script's
+# own commands, whatever the shell said.
+session_bus_env() {
+  local rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+  [ -S "$rt/bus" ] || rt=/run/user/$(id -u)
+  [ -S "$rt/bus" ] || return 0
+  export XDG_RUNTIME_DIR=$rt
+  export DBUS_SESSION_BUS_ADDRESS=unix:path=$rt/bus
 }
 
 cmd_agent() {
@@ -1420,6 +1459,7 @@ cmd_agent() {
     return 0
   fi
 
+  session_bus_env
   apptainer instance start "${APPT_ARGS[@]}" "${ENV_ARGS[@]}" "$IMAGE" "$inst" \
       >>"$rundir/console.log" 2>&1 \
     || die_hint "could not start the container for agent '$name'" \
@@ -1484,7 +1524,7 @@ write_meta() {
   date -u +%Y-%m-%dT%H:%M:%SZ > "$rundir/started_at"
   CB_F=$rundir/meta.json CB_NAME=$name CB_INST=$inst CB_WD=$workdir \
   CB_TOOL=$TOOL CB_IMG=$IMAGE CB_TO=$OPT_TIMEOUT CB_BUD=${OPT_BUDGET:-} CB_MODEL=${OPT_MODEL:-} \
-  python3 - <<'PY'
+  python3 -I - <<'PY'
 import json, os, datetime
 meta = {
     "name":     os.environ["CB_NAME"],
@@ -1522,7 +1562,7 @@ cmd_list() {
     name=$(basename "$d")
     status=$(cat "$d/status" 2>/dev/null || echo unknown)
     started=$(cat "$d/started_at" 2>/dev/null || echo -)
-    workdir=$(python3 -c 'import json,sys
+    workdir=$(python3 -I -c 'import json,sys
 try: print(json.load(open(sys.argv[1]))["workdir"])
 except Exception: print("-")' "$d/meta.json" 2>/dev/null || echo -)
     # A 'running' status with no live instance means something killed it.
@@ -1575,7 +1615,7 @@ cmd_stop() {
     rm -rf "$rundir/auth" "$rundir/tmp.env" "$rundir/tmp/.agentbox"
     local since tool
     since=$(date -d "$(cat "$rundir/started_at" 2>/dev/null)" +%s 2>/dev/null) || since=0
-    tool=$(python3 -c 'import json,sys
+    tool=$(python3 -I -c 'import json,sys
 try: print(json.load(open(sys.argv[1])).get("tool") or "claude")
 except Exception: print("claude")' "$rundir/meta.json" 2>/dev/null)
     TOOL=${tool:-$TOOL} post_hook agent "" "$since" 143 "$name" "$rundir"
@@ -1628,12 +1668,12 @@ cmd_log() {
 # meta.json (runs from before that was recorded are Claude's).
 render_stream() {
   local tool
-  tool=$(python3 -c 'import json,sys
+  tool=$(python3 -I -c 'import json,sys
 try: print(json.load(open(sys.argv[1])).get("tool") or "claude")
 except Exception: print("claude")' "$1/meta.json" 2>/dev/null)
   case $tool in
-    goose) python3 -u -c "$RENDER_PY_goose" ;;
-    *)     python3 -u -c "$RENDER_PY" ;;
+    goose) python3 -I -u -c "$RENDER_PY_goose" ;;
+    *)     python3 -I -u -c "$RENDER_PY" ;;
   esac
 }
 

@@ -16,7 +16,7 @@ Node.js needed.
 
 ```bash
 cd /exp/mu2e/app/users/$USER
-git clone https://github.com/Mu2e/aitools.git     # until merged: -b sc/harness https://github.com/corrodis/aitools.git
+git clone https://github.com/Mu2e/aitools.git
 cd aitools/harness/claude-code
 . setup.sh
 ```
@@ -153,10 +153,11 @@ claudebox help                     # everything else (--krb5, --github, --bind, 
 ```
 
 The container has its own home (`/exp/mu2e/app/users/$USER/claudebox/`),
-separate from the harness one. `run` sessions are added to the usage log;
-`agent` runs are not (yet). The script itself is
-`../claudebox/claudebox`; run it directly (or `command claudebox`, the copy
-in the CVMFS `bin`) for a box without the harness defaults.
+separate from the harness one. Sessions and `agent` runs are added to the
+usage log when they end. The script itself is `../claudebox/agentbox`
+(Ray's `claudebox` with a few changes, see its
+[README](../claudebox/README.md)); run that, or `command claudebox` (the
+copy in the CVMFS `bin`), for a box without the harness defaults.
 
 ## Troubleshooting
 
@@ -179,7 +180,7 @@ in the CVMFS `bin`) for a box without the harness defaults.
 | `sync-mcp.sh`, `sync_mcp_claude.py` | Connect the MCP servers from the registry |
 | `settings.json.example` | Template for `settings.json` (the live copy is outside the repo) |
 | `claudebox.sh` | Harness defaults for `claudebox` (the `claudebox` function in `env.sh`) |
-| `../claudebox/claudebox` | The sandbox script itself -- see its [README](../claudebox/README.md) |
+| `../claudebox/agentbox` | The sandbox script itself (`../claudebox/claudebox` is Ray's original) -- see its [README](../claudebox/README.md) |
 | `hooks/block-commands.sh` | PreToolUse guard rail |
 | `hooks/log-session.sh`, `log-session-claude.py` | Usage log |
 | `../shared/`, `../usage/` | Shared with goose -- see [`../README.md`](../README.md#whats-shared-between-the-harnesses) |

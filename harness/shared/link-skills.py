@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -107,9 +108,16 @@ def main(argv: list[str]) -> int:
         skills = {n: p for n, p in skills.items() if n in only}
 
     manifest = dest / MANIFEST
+    # In a box the destination is writable from inside: the record is taken
+    # as a list of plain names in this folder and nothing else, and neither it
+    # nor the folder is followed if it has been made a link.
+    if (copy and dest.is_symlink()) or manifest.is_symlink():
+        print(f"link-skills: {dest} or its record is a link; not touching it", file=sys.stderr)
+        return 1
     try:
-        ours = set(json.loads(manifest.read_text()))
-    except (OSError, ValueError):
+        ours = {n for n in json.loads(manifest.read_text())
+                if isinstance(n, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", n)}
+    except (OSError, ValueError, TypeError):
         ours = set()
 
     # What an earlier run put here and is not wanted any more.
@@ -134,7 +142,11 @@ def main(argv: list[str]) -> int:
         placed.append(name)
         if verbose:
             print(f"  {name}  <-  {src.parent}")
-    manifest.write_text(json.dumps(sorted(placed)) + "\n")
+    if manifest.exists():
+        manifest.unlink()
+    fd = os.open(manifest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps(sorted(placed)) + "\n")
 
     used = [str(s) for s in sources if s.is_dir()]
     note = f", {len(own)} of your own kept ({', '.join(own)})" if own else ""

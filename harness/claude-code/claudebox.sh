@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Harness front end for claudebox (Claude Code in a locked-down apptainer
-# container; the script itself is ../claudebox/claudebox). env.sh defines a
+# container; the script itself is ../claudebox/agentbox, Ray's claudebox with
+# the changes described in ../claudebox/README.md). env.sh defines a
 # `claudebox` function that calls this, so with the harness loaded
 # `claudebox ...` gets the Mu2e defaults; running the claudebox script
 # directly bypasses them.
@@ -27,10 +28,17 @@ set -uo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 shared="$script_dir/../shared"
 
-# The claudebox script: the copy that comes with the harness, else the one
-# in the CVMFS bin directory. $CLAUDEBOX_BIN overrides both.
-cbx="${CLAUDEBOX_BIN:-$script_dir/../claudebox/claudebox}"
+# The box script: agentbox, which comes with the harness (Ray's claudebox
+# plus usage logging for agents too, a clean environment for agents, and a
+# host side kept apart from what a box session can write). Without it, the
+# claudebox next to it, else the one in the CVMFS bin directory.
+# $CLAUDEBOX_BIN overrides all three.
+cbx="${CLAUDEBOX_BIN:-$script_dir/../claudebox/agentbox}"
+[[ -x "$cbx" || -n "${CLAUDEBOX_BIN:-}" ]] || cbx="$script_dir/../claudebox/claudebox"
 [[ -x "$cbx" || -n "${CLAUDEBOX_BIN:-}" ]] || cbx=/cvmfs/mu2e.opensciencegrid.org/bin/claudebox
+# Messages and hints say "claudebox", the command you typed; and it is
+# Claude Code that runs, whatever the script is called.
+export AGENTBOX_PROG=claudebox AGENTBOX_TOOL=claude
 [[ -x "$cbx" ]] || { echo "claudebox: $cbx not found" >&2; exit 1; }
 
 # Backend settings (key, base URL, model mapping). env.sh keeps them out of
@@ -53,6 +61,7 @@ case "$sub" in
   ""|-*) sub=run ;;
   *) if [[ -d "$sub" ]]; then sub=run; else exec "$cbx" "$@"; fi ;;
 esac
+[[ "$sub" == start ]] && sub=agent    # an alias: an agent's default work directory, not $PWD
 
 # Same root claudebox will use: --root, $CLAUDEBOX_ROOT, else the /exp area.
 root="${CLAUDEBOX_ROOT:-/exp/${EXPERIMENT:-mu2e}/app/users/$USER/claudebox}"
@@ -64,11 +73,18 @@ for a in "$@"; do
   prev="$a"
 done
 box_home="$root/home"
+# The box home is writable by whatever ran in the box before. A link left
+# there, where a folder or file is expected, must not send what is written
+# here on the host to somewhere else: links are removed, files replaced.
+for d in "$box_home/.claude" "$box_home/.claude/skills"; do [[ -L "$d" ]] && rm -f "$d"; done
+# The box script writes these two through a ".tmp" next to them.
+for f in "$box_home/.claude.json.tmp" "$box_home/.claude/.claude.json.tmp"; do [[ -L "$f" ]] && rm -f "$f"; done
 mkdir -p "$box_home/.claude" && chmod 700 "$box_home" "$box_home/.claude"
 
 # Box settings: only if the box has none yet -- otherwise claudebox would
 # copy your personal ~/.claude/settings.json. No hooks: the harness paths
 # are not mounted inside.
+[[ -L "$box_home/.claude/settings.json" ]] && rm -f "$box_home/.claude/settings.json"
 if [[ ! -e "$box_home/.claude/settings.json" ]]; then
   ( umask 077; printf '{\n  "model": "sonnet"\n}\n' > "$box_home/.claude/settings.json" )
 fi
@@ -133,14 +149,35 @@ if [[ -z "$workdir" ]]; then
 fi
 workdir="$(cd "$workdir" 2>/dev/null && pwd -P || echo "$workdir")"
 
-# claudebox lets the whole /exp/<exp>/app/users/$USER area through (its depth
-# check is one level short); that includes the harness config and API key.
+# The work directory is writable in the box, at its host path. Refuse one
+# that holds, or lies inside, a folder with your keys, the harness's own
+# programs or the box's staged secrets: the harness homes, the hep-genesis
+# install and data, and the box root (its work/ folder excepted). The box
+# script's own check only counts the depth of the path.
 if [[ "$workdir" == /exp/* ]] && [[ "$(awk -F/ '{print NF-1}' <<<"$workdir")" -lt 6 ]]; then
   echo "claudebox: refusing $workdir as the work directory: it holds your harness" >&2
   echo "  config and keys. Use a project directory below it (-C DIR)." >&2
   exit 1
 fi
+_users="/exp/${EXPERIMENT:-mu2e}"
+root_real="$(cd "$root" 2>/dev/null && pwd -P || echo "$root")"
+for p in "${CLAUDE_HOME:+$(dirname "$CLAUDE_HOME")}" "${GOOSE_ROOT:-}" \
+         "$_users/app/users/$USER/claude-code" "$_users/app/users/$USER/goose" \
+         "$_users/app/users/$USER/goosebox" "${GOOSEBOX_ROOT:-}" \
+         "$_users/app/users/$USER/hep-genesis" "${HG_DATA_DIR:-$_users/data/users/$USER/hep-genesis-data}" \
+         "$root_real"; do
+  [[ -n "$p" && -d "$p" ]] || continue
+  p="$(cd "$p" 2>/dev/null && pwd -P)" || continue
+  [[ "$p" == "$root_real" && "$workdir/" == "$root_real/work/"* ]] && continue
+  if [[ "$workdir/" == "$p/"* || "$p/" == "$workdir/"* ]]; then
+    echo "claudebox: refusing $workdir as the work directory: it overlaps $p," >&2
+    echo "  which holds keys, settings or programs the box must not be able to change." >&2
+    echo "  Use a project directory elsewhere (-C DIR)." >&2
+    exit 1
+  fi
+done
 
+rm -f "$box_home/.claude/CLAUDE.md"     # replaced, never written through
 {
   cat "$shared/mu2e.md" "$script_dir/../claudebox/box-note.md"
   echo

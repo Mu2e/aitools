@@ -13,7 +13,7 @@ On a gpvm (see also the overview in [`../README.md`](../README.md)):
 
 ```bash
 cd /exp/mu2e/app/users/$USER
-git clone https://github.com/Mu2e/aitools.git     # until merged: -b sc/harness https://github.com/corrodis/aitools.git
+git clone https://github.com/Mu2e/aitools.git
 cd aitools/harness/goose
 . setup.sh           # source it, so goose is also on PATH in this shell
 ```
@@ -121,8 +121,8 @@ goosebox list | log nightly -f | stop nightly
 goosebox help
 ```
 
-The box has its own home (`/exp/mu2e/app/users/$USER/claudebox/`, shared
-with `claudebox`). Sessions and agent runs are added to the usage log when
+The box has its own home (`/exp/mu2e/app/users/$USER/goosebox/`;
+`$GOOSEBOX_ROOT` or `--root` for another), apart from `claudebox`'s. Sessions and agent runs are added to the usage log when
 they end.
 
 ### Optional: local tracing (OpenTelemetry → Jaeger)
