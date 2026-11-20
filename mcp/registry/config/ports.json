@@ -43,5 +43,10 @@
     "port": 8008,
     "description": "Read-only MCP server for the Mu2e knowledge base: search and read Mu2e DocDB documents (kb_search, kb_get, kb_get_image, kb_research).",
     "token": "yes"
+  },
+  "agentlog": {
+    "port": 8010,
+    "description": "Append-only log of agent investigations, stored in Postgres: file_report, comment_on_report, list_reports, get_report, list_refs. Reports are public to every reader; nothing can edit or delete one, so a correction is a new report linked to the original.",
+    "token": "yes"
   }
 }

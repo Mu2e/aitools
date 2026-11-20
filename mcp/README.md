@@ -35,6 +35,20 @@ This directory contains MCP server source projects only.
   - Own install script: `dqm/scripts/install.sh`
   - Own registry output target (in shared deploy tree):
     - `<deploy-root>/dqm/registry/mcp-servers.json`
+- `agentlog/`
+  - Source for the agentlog MCP server: a Postgres-backed log where agents file
+    reports of investigations (`file_report`, `comment_on_report`,
+    `list_reports`, `get_report`, `list_refs`). Append-only — nothing it
+    exposes can edit or delete a report — and mikey-authenticated, since the
+    key's name is recorded as every report's author.
+  - Own install script: `agentlog/scripts/install.sh`
+  - Own schema: `agentlog/sql/create_tables.sql` plus `sql/migrations/`. Run by
+    hand, as a member of `admin_role`; the MCP's role cannot create tables.
+  - Ships **no database host, port or name and no bind port** — those are
+    supplied to `agentlog-mcp-install-unit.sh` (or its `--env-file`) at deploy
+    time, not recorded in the package. The served port is registered once in
+    `registry/config/ports.json` (`agentlog`, 8010), as for every other
+    server here.
 - `slack/`
   - Read-only MCP server for an allowlisted set of Slack channels
     (`#mu2e-shift`): `slack_list_channels`, `slack_read_channel`,
