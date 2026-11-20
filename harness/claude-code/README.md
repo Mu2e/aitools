@@ -28,10 +28,16 @@ hidden). `setup.sh` is safe to re-run; it only does what's missing:
    `/exp/mu2e/app/users/$USER/claude-code/home/.local/` (~320 MB; it
    auto-updates). Pin a version with `. setup.sh 2.1.318` (or `stable`).
 2. Seeds `settings.json` from `settings.json.example`: default model
-   Sonnet, guard-rail and logging hooks, deny rules.
+   Sonnet, guard-rail and logging hooks, deny rules. An existing file is
+   left alone; `. setup.sh --refresh-settings` replaces it with the current
+   template (your old one is kept in `.claude/backups/`) -- use that after
+   a harness update that changed the template, or after moving the clone.
 3. Links the Mu2e context `../shared/mu2e.md` as `~/.claude/CLAUDE.md`
    (loaded in every session).
 4. Asks for a backend if none is configured (see [Backends](#backends)).
+   To switch backends later, `. setup.sh --reset-login` moves the stored
+   API key (`.env`) and claude.ai login aside (into `.claude/backups/`) and
+   asks again. `--refresh-settings` doesn't touch the login.
 5. Connects the Mu2e MCP servers from the registry on mu2eaigpvm01.
 
 ## Use
@@ -82,7 +88,8 @@ If you used litellm or an API key before, move
 `$CLAUDE_HOME/.env` away first: a key there takes precedence over the login.
 
 The backend settings live in `/exp/mu2e/app/users/$USER/claude-code/home/.env`
-(private, mode 600); `env.sh` loads it.
+(private, mode 600). They are loaded for `claude` (and `claudebox`) only --
+the key is not exported into your shell.
 
 ## MCP servers
 
@@ -95,15 +102,24 @@ without Kerberos, `sync-mcp.sh` stores the header instead and says so.)
 
 ## Guard rails
 
-- The session has **no Kerberos ticket** and its `$HOME` is the harness
-  directory (no `~/.ssh`), so remote logins fail. Run `kinit`, `ssh`, `sudo`
-  yourself, outside claude.
+- The session is started with `KRB5CCNAME` pointing at a non-existent
+  cache and `$HOME` set to the harness directory, so by default it finds
+  neither your Kerberos ticket nor `~/.ssh`, and remote logins fail. Run
+  `kinit`, `ssh`, `sudo` yourself, outside claude.
 - A PreToolUse hook (`hooks/block-commands.sh` →
   `../shared/block_commands.py`) refuses `ssh`, `scp`, `sftp`, `rsync`,
-  `kinit`, `sudo`, `su` -- also behind `env`, `timeout`, `xargs`, `sh -c '...'`,
+  `kinit`, `sudo`, `su` -- also on later lines of a multi-line command,
+  inside `if`/`for`/`{ }`, behind `env`, `timeout`, `xargs`, `sh -c '...'`,
   `$(...)` -- and `permissions.deny` in `settings.json` adds Claude Code's
-  own check. A guard rail, not a sandbox: the agent runs with your Unix
-  permissions.
+  own check for the same commands.
+- **What this is not:** a security boundary. The agent runs as you, with
+  your Unix permissions. Your real ticket cache (`/tmp/krb5cc_<uid>_*`) and
+  home directory still exist and are readable by your processes; a session
+  that deliberately sets `KRB5CCNAME` back, or runs `ssh` from a script it
+  wrote, gets past all of the above. The guard rails stop accidents and the
+  obvious path, not a determined or prompt-injected agent. When that
+  matters (untrusted input, unattended runs), use
+  [claudebox](#sandboxed-claudebox).
 
 ## Usage log
 
@@ -113,10 +129,12 @@ line per session into `/exp/mu2e/app/users/$USER/claude-code/log/usage.jsonl`.
 Records have the columns of the shared table `usage.sessions`
 (`../usage/sessions.sql`), like the goose harness and the Slack bot: counts,
 timings, model and tool names only -- no user, directory or content.
+`provider` says which backend the session ran on: `litellm`, `anthropic` (a
+personal API key) or `claude.ai` (a subscription login).
 
 ## Sandboxed: claudebox
 
-`/cvmfs/mu2e.opensciencegrid.org/bin/claudebox` runs Claude Code in an
+[`claudebox`](../claudebox/README.md) runs Claude Code in an
 apptainer container that sees only `/cvmfs` (read-only) and **one work
 directory** -- no home, no other `/exp` areas, no Kerberos, no tokens. With
 the harness loaded, `claudebox` gets the harness defaults (via
@@ -132,9 +150,11 @@ claudebox help                     # everything else (--krb5, --github, --bind, 
 ```
 
 The container has its own home (`/exp/mu2e/app/users/$USER/claudebox/`),
-separate from the harness one. `run` sessions are added to the usage log;
-`agent` runs are not (yet). `command claudebox` runs the plain CVMFS
-version without the harness defaults.
+separate from the harness one. Sessions and `agent` runs are added to the
+usage log when they end. The script itself is `../claudebox/agentbox`
+(Ray's `claudebox` with a few changes, see its
+[README](../claudebox/README.md)); run that, or `command claudebox` (the
+copy in the CVMFS `bin`), for a box without the harness defaults.
 
 ## Troubleshooting
 
@@ -144,18 +164,20 @@ version without the harness defaults.
 | `API Error: 400 ... Invalid model name` | the model name isn't one litellm knows: `./setup-litellm.sh` to refresh the model mapping, then restart claude |
 | claude starts, but replies `Not logged in · Please run /login` | no backend configured: `./setup-litellm.sh`, or `/login` for a subscription |
 | an MCP server shows `✘ Failed` in `claude mcp list` | `./sync-mcp.sh`; the token-gated servers need read access to the Mu2e key (member of `mu2e`) |
-| `/login` seems ignored | a key in `$CLAUDE_HOME/.env` wins -- move the file away, open a new shell |
+| `/login` seems ignored | a key in `$CLAUDE_HOME/.env` wins: `. setup.sh --reset-login`, choose [3], then `/login` |
+| guard rail or usage log not active; `setup.sh` warns about the guard-rail hook | `settings.json` points at an old clone location or predates a template change: `. setup.sh --refresh-settings` |
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `env.sh` | Source in each shell: `claude` with the harness `$HOME`, no Kerberos, private umask |
-| `setup.sh` | Idempotent install + configuration (source it) |
+| `env.sh` | Source in each shell: `claude` with the harness `$HOME`, Kerberos ticket hidden, private umask |
+| `setup.sh` | Idempotent install + configuration (source it); `--refresh-settings` re-seeds `settings.json`, `--reset-login` re-chooses the backend |
 | `setup-litellm.sh` | Configure litellm.fnal.gov: key, model mapping |
 | `sync-mcp.sh`, `sync_mcp_claude.py` | Connect the MCP servers from the registry |
 | `settings.json.example` | Template for `settings.json` (the live copy is outside the repo) |
-| `claudebox.sh` | Harness defaults for the CVMFS `claudebox` (the `claudebox` function in `env.sh`) |
+| `claudebox.sh` | Harness defaults for `claudebox` (the `claudebox` function in `env.sh`) |
+| `../claudebox/agentbox` | The sandbox script itself (`../claudebox/claudebox` is Ray's original) -- see its [README](../claudebox/README.md) |
 | `hooks/block-commands.sh` | PreToolUse guard rail |
 | `hooks/log-session.sh`, `log-session-claude.py` | Usage log |
 | `../shared/`, `../usage/` | Shared with goose -- see [`../README.md`](../README.md#whats-shared-between-the-harnesses) |

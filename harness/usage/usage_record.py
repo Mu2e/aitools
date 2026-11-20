@@ -54,7 +54,16 @@ def provider_from_endpoint(url: Optional[str], default: str = "unknown") -> str:
 
 def harness_commit() -> str:
     """aitools commit, 7 characters like the Slack bot writes it (the same
-    commit at two widths would not group in SQL)."""
+    commit at two widths would not group in SQL).
+
+    A deployed copy (CVMFS) has no .git: deploy.sh writes the commit into
+    harness/VERSION, which is read first."""
+    try:
+        version = (Path(__file__).resolve().parent.parent / "VERSION").read_text().strip()
+        if version:
+            return version[:7]
+    except OSError:
+        pass
     try:
         out = subprocess.run(
             ["git", "-C", str(Path(__file__).resolve().parent), "rev-parse", "--short=7", "HEAD"],

@@ -140,6 +140,17 @@ mu2eai-model() {
   goose-model "$@"
 }
 
+# Sandboxed goose: goosebox (goose in an apptainer container, the agentbox
+# example in ../claudebox), through goosebox.sh, which adds the Mu2e MCP
+# servers, the Mu2e context and usage logging -- as the claudebox function
+# of the claude-code harness does for Claude Code.
+goosebox() {
+  "$GOOSE_HARNESS_DIR/goosebox.sh" "$@"
+}
+# The harness directory, so the function finds its script after
+# env_script_dir is gone.
+export GOOSE_HARNESS_DIR="$env_script_dir"
+
 # ---------------------------------------------------------------------------
 # Shared context injection via TOM (Top Of Mind) extension
 #

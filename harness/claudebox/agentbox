@@ -1,0 +1,1876 @@
+#!/bin/bash
+#
+# agentbox -- EXAMPLE: claudebox, generalised to more than one agent.
+#
+# This is Ray's claudebox (./claudebox, version 0.1) with the Claude-specific
+# parts moved into "claude_*" functions and a second set, "goose_*", added
+# next to them -- see TOOL ADAPTERS below. Everything else (sandbox root,
+# apptainer arguments, binds, secrets, credential imports, agent lifecycle)
+# is his code, unchanged. A proposal to look at, not a replacement:
+# `diff claudebox agentbox` shows exactly what moved.
+#
+# Called as `goosebox` (a link to this file) it runs goose; under any other
+# name, Claude Code. --tool NAME or $AGENTBOX_TOOL override the name.
+#
+# The original description follows.
+#
+# claudebox -- run Claude Code inside a locked-down apptainer container.
+#
+# The container is built from the same Fermilab EL9 image that al9container
+# uses, but with essentially nothing bind-mounted: no $HOME, no /pnfs, no
+# Kerberos ccache, no bearer token, no X509 proxy, no other users' areas.
+# Claude sees /cvmfs (read-only), one work directory (read-write), and a
+# sandbox home that belongs to claudebox alone.
+#
+# Two modes:
+#   claudebox run [dir]            interactive Claude Code in a sandbox
+#   claudebox agent NAME <prompt>  detached, self-driving agent
+#
+# See `claudebox help` for the full list of subcommands and options.
+#
+set -uo pipefail
+
+# The name used in messages and hints. A front end that calls this script
+# under another command name (the harness's `claudebox`) says so here.
+PROG=${AGENTBOX_PROG:-${0##*/}}
+VERSION=0.1+agentbox-example
+
+# Which agent runs in the box. Everything that depends on it lives in the
+# <tool>_* functions (TOOL ADAPTERS); the rest of the script is shared.
+case $PROG in
+  goose*) TOOL=goose ;;
+  *)      TOOL=claude ;;
+esac
+TOOL=${AGENTBOX_TOOL:-$TOOL}
+
+# ---------------------------------------------------------------- messages --
+
+if [ -t 2 ]; then
+  C_RED=$'\033[31m'; C_YEL=$'\033[33m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
+else
+  C_RED=; C_YEL=; C_DIM=; C_OFF=
+fi
+
+die()  { printf '%s%s: error: %s%s\n' "$C_RED" "$PROG" "$*" "$C_OFF" >&2; exit 1; }
+warn() { printf '%s%s: warning: %s%s\n' "$C_YEL" "$PROG" "$*" "$C_OFF" >&2; }
+info() { printf '%s%s: %s%s\n' "$C_DIM" "$PROG" "$*" "$C_OFF" >&2; }
+
+# Multi-line error with a hint block, for the preflight checks.
+die_hint() {
+  local msg=$1; shift
+  printf '%s%s: error: %s%s\n' "$C_RED" "$PROG" "$msg" "$C_OFF" >&2
+  local line
+  for line in "$@"; do printf '  %s\n' "$line" >&2; done
+  exit 1
+}
+
+# ---------------------------------------------------------------- defaults --
+
+DEFAULT_IMAGE=/cvmfs/singularity.opensciencegrid.org/fermilab/fnal-dev-el9:devel
+SBOX_HOME_IN=/home/box           # where the sandbox home appears inside
+CLAUDE_BIN_IN=/opt/claudebin     # where the claude install appears inside
+AUTH_DIR_IN=/run/claudebox       # where imported credentials appear inside
+MCP_IN=/etc/claudebox-mcp.json   # where an --mcp config appears inside
+DEFAULT_TIMEOUT=4h
+
+IMAGE=${CLAUDEBOX_IMAGE:-$DEFAULT_IMAGE}
+ROOT=${CLAUDEBOX_ROOT:-}
+TOOL_HOST=${AGENTBOX_BIN:-}      # the agent's executable on the host
+
+# per-invocation options
+OPT_PNFS=0
+OPT_KRB5=0
+OPT_KRB5_CC=
+OPT_TOKEN=0
+OPT_TOKEN_FILE=
+OPT_GITHUB=0
+OPT_MIKEY=0
+OPT_MCP=
+OPT_DISPLAY=0
+declare -a SECRETS=()
+OPT_YOLO=0
+OPT_PERMMODE=
+OPT_MODEL=
+OPT_BUDGET=
+OPT_TIMEOUT=$DEFAULT_TIMEOUT
+OPT_WORKDIR=
+OPT_FORCE=0
+OPT_ALL=0
+OPT_FOLLOW=0
+OPT_RAW=0
+OPT_DRYRUN=0
+declare -a EXTRA_BINDS=()
+declare -a PASSTHRU=()
+
+# ------------------------------------------------------------------- usage --
+
+usage() {
+  cat <<EOF
+$PROG $VERSION -- an AI coding agent ($TOOL) in a sandboxed apptainer container
+
+USAGE
+  $PROG run [DIR] [options] [-- claude-args...]
+        Interactive Claude Code. DIR (default: current directory) is the only
+        writable host path inside the container.
+
+  $PROG agent NAME [options] (-f FILE | "PROMPT" | -)
+        Start a detached agent named NAME. The prompt comes from a file (-f),
+        a quoted argument, or stdin (-). Returns immediately.
+
+  $PROG list                  Show agents and their status.
+  $PROG log NAME [-f] [--raw] Show an agent's output; -f to follow.
+  $PROG stop NAME             Stop a running agent.
+  $PROG clean [NAME|--all]    Remove finished agents' run directories.
+  $PROG shell [DIR]           Plain shell in the sandbox (for debugging).
+  $PROG info                  Show resolved paths and settings.
+  $PROG help                  This message.
+
+OPTIONS (run / agent / shell)
+  -C, --workdir DIR    Work directory to bind read-write.
+                       run:   defaults to the current directory
+                       agent: defaults to \$CLAUDEBOX_ROOT/work
+  -b, --bind SRC[:DST[:rw]]
+                       Extra bind mount, read-only unless ':rw' is given.
+                       Repeatable. DST defaults to SRC.
+      --pnfs           Bind /pnfs read-only (off by default).
+      --display        Pass \$DISPLAY through (off by default).
+
+  Credential imports -- each one deliberately weakens the sandbox, so both
+  are off by default and both announce themselves when used. The container
+  always gets a private *copy*; the originals are never exposed or modified.
+
+      --krb5           Import your Kerberos ticket cache, so the container
+                       can authenticate as you (ssh, kinit'd services).
+                       Brings the host /etc/krb5.conf along, because the
+                       EL9 image's own has no FNAL realms.
+      --krb5-ccache F  Import cache F instead of \$KRB5CCNAME. Implies --krb5.
+                       Only FILE: caches can be imported.
+      --token          Import your WLCG bearer token / scitoken, so the
+                       container can reach dCache and submit jobs. Found via
+                       \$BEARER_TOKEN_FILE, \$BEARER_TOKEN, \$XDG_RUNTIME_DIR/
+                       bt_u<uid>, then /tmp/bt_u<uid>.
+      --token-file F   Import token file F instead. Implies --token. Use this
+                       for any token claudebox does not know how to find.
+      --github         Import a GitHub PAT, from \$GH_TOKEN, \$GITHUB_TOKEN or
+                       'gh auth token'. Sets both variable names inside,
+                       installs a git credential helper so git-over-HTTPS
+                       works too, and lends the container the host's gh.
+      --mikey          Import the mikey org token, from \$MIKEY_TOKEN,
+                       ~/.config/mu2e/mikey-token or ~/.mikey-token.
+                       Only useful together with --mcp; see MCP SERVERS.
+      --secret NAME    Pass \$NAME from your environment into the container.
+      --secret NAME=V  Pass the literal value V. Avoid this: V lands in
+                       claudebox's own command line, which ps exposes.
+      --secret-file NAME=FILE
+                       Pass NAME with its value read from FILE's first line.
+                       This is the safe way to hand over any token.
+
+  Secrets never travel on a command line. They are written to a 0600 file
+  outside every bind mount, handed to apptainer with --env-file, and deleted
+  when the session ends. /proc/<pid>/cmdline is world-readable on these
+  nodes, so a token passed as --env would be visible to every user via ps.
+
+MCP SERVERS
+      --mcp FILE       Load MCP servers from FILE (a JSON file with an
+                       "mcpServers" object) and load nothing else.
+
+  The sandbox home starts with no MCP servers at all, so an agent gets none
+  unless you pass --mcp. Keep tokens out of that file and reference them as
+  \${VAR}, which Claude Code expands from the environment -- so a config can
+  be shared or committed while the token arrives separately:
+
+      { "mcpServers": { "runs": {
+          "type": "http",
+          "url": "http://mu2eaigpvm01.fnal.gov:8006/mcp",
+          "headers": { "Authorization": "Bearer \${MIKEY_TOKEN}" } } } }
+
+      $PROG agent nightly --mikey --mcp ~/mcp-agent.json -f prompt.txt
+      --model NAME     Model for the session (passed to claude --model).
+      --permission-mode MODE
+                       acceptEdits | auto | bypassPermissions | manual |
+                       dontAsk | plan.  Overrides the default for the mode.
+      --yolo           run only: skip all permission prompts. (Agents already
+                       do this; the sandbox is what makes it reasonable.)
+
+OPTIONS (agent)
+  -f, --prompt-file F  Read the prompt from F.
+      --timeout DUR    Wall-clock limit, e.g. 30m, 4h. Default $DEFAULT_TIMEOUT.
+                       'none' disables it.
+      --budget USD     Stop after spending this much (claude --max-budget-usd).
+      --force          Replace an existing finished run of the same name.
+
+GLOBAL OPTIONS
+      --root DIR       Sandbox root. Default: \$CLAUDEBOX_ROOT, else
+                       /exp/<experiment>/app/users/\$USER/claudebox
+      --image PATH     Container image. Default: \$CLAUDEBOX_IMAGE, else
+                       $DEFAULT_IMAGE
+      --tool NAME      Agent to run: claude or goose. Default: by the name
+                       this script is called by (goosebox -> goose), or
+                       \$AGENTBOX_TOOL.
+      --bin PATH       Path to the agent's executable on the host
+                       (--claude PATH is the same).
+      --dry-run        Print the apptainer command instead of running it.
+  -h, --help           This message.
+
+ENVIRONMENT
+  CLAUDEBOX_ROOT, CLAUDEBOX_IMAGE, CLAUDEBOX_CLAUDE override the defaults.
+  AGENTBOX_POST_HOOK names an executable to run on the host -- outside the
+  sandbox, as you -- when a 'run' session or an agent ends (usage logging,
+  for one). It is told about the session through AGENTBOX_TOOL, _MODE
+  (run|agent), _HOME (the sandbox home, a host path), _WORKDIR, _SINCE (start
+  time, seconds since the epoch), _STATUS (exit code) and, for agents,
+  _NAME and _RUNDIR. Its failure never changes the session's result.
+  ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL are forwarded
+  into the container if set; otherwise your ~/.claude/.credentials.json is
+  copied in (copied in only -- the sandbox never writes back to it).
+
+TOOLS
+  claude   Everything above applies as written.
+  goose    run starts 'goose session', agent runs 'goose run'. Differences:
+           - Provider settings come from your goose config.yaml, copied in on
+             every launch without its MCP extensions; provider keys come from
+             the environment (OPENAI_API_KEY, LITELLM_API_KEY, ...) or, if
+             none is set, from your goose secrets.yaml -- through the env
+             file, like every other secret.
+           - --mcp takes the same JSON file. goose does not expand \${VAR} in
+             headers, so the servers are written, with the values filled in,
+             to a private config under the session's /tmp, removed when the
+             session ends.
+           - --permission-mode / --yolo set GOOSE_MODE (auto, smart_approve,
+             approve, chat). --budget is not available: goose has no spending
+             limit. Use --timeout, or '-- --max-turns N'.
+
+WHAT IS AND IS NOT SEALED OFF
+  Removed: \$HOME, Kerberos ccache, bearer tokens, X509 proxy, ~/.ssh, /pnfs,
+  every /exp path outside the work directory, and your host environment.
+  Not removed: the Claude OAuth token (Claude must read it to authenticate)
+  and network access (unprivileged apptainer cannot make a network namespace).
+  --krb5 and --token put back exactly what they name, and nothing else.
+
+  Note that an imported token is a copy taken at launch: it expires on its
+  own schedule and nothing inside the box renews it, so a long agent run can
+  outlive its credentials. Check the lifetime claudebox prints at startup.
+EOF
+}
+
+# --------------------------------------------------------------- resolvers --
+
+# Sandbox root: --root, then $CLAUDEBOX_ROOT, then the user's /exp app area.
+resolve_root() {
+  if [ -z "$ROOT" ]; then
+    local exp cand
+    for exp in ${EXPERIMENT:-} mu2e; do
+      [ -n "$exp" ] || continue
+      cand=/exp/$exp/app/users/$USER
+      if [ -d "$cand" ]; then ROOT=$cand/claudebox; break; fi
+    done
+  fi
+  [ -n "$ROOT" ] || die_hint "cannot work out where to put the sandbox root" \
+    "No /exp/<experiment>/app/users/$USER directory was found." \
+    "Set CLAUDEBOX_ROOT to a directory you own on a local filesystem, e.g." \
+    "  export CLAUDEBOX_ROOT=/exp/mu2e/app/users/$USER/claudebox" \
+    "or pass --root DIR."
+
+  if ! mkdir -p "$ROOT" 2>/dev/null; then
+    die_hint "cannot create sandbox root: $ROOT" \
+      "Check that the parent directory exists and is writable by you."
+  fi
+  [ -w "$ROOT" ] || die "sandbox root is not writable: $ROOT"
+  ROOT=$(cd "$ROOT" && pwd -P)
+
+  SBOX_HOME=$ROOT/home
+  RUNS_DIR=$ROOT/runs
+  TMP_DIR=$ROOT/tmp
+  WORK_DEFAULT=$ROOT/work
+  mkdir -p "$SBOX_HOME" "$RUNS_DIR" "$TMP_DIR" "$WORK_DEFAULT" || die "cannot populate $ROOT"
+  chmod 700 "$SBOX_HOME" 2>/dev/null
+
+  # Keep apptainer's scratch off NFS home and out of /tmp.
+  export APPTAINER_TMPDIR=$TMP_DIR/apptainer
+  export APPTAINER_CACHEDIR=$ROOT/cache
+  mkdir -p "$APPTAINER_TMPDIR" "$APPTAINER_CACHEDIR"
+}
+
+# ---------------------------------------------------------- TOOL ADAPTERS --
+#
+# Each agent supplies the same small set of functions, named <tool>_*:
+#
+#   <tool>_candidates        where to look for the executable (one per line)
+#   <tool>_install_hint      what to say when it is not found
+#   <tool>_check_binary      refuse an executable that cannot work in the box
+#   <tool>_seed_home DIR     prepare the sandbox home for work directory DIR
+#   <tool>_env TMPDIR        add the agent's settings to ENV_ARGS, its
+#                            credentials to the secrets
+#   <tool>_args PERM         translate --model / --mcp / permission options
+#   <tool>_run_cmd           set RUN_CMD, the interactive command
+#   <tool>_agent_cmd         set AGENT_CMD, the unattended one (prompt on stdin)
+#   <tool>_credentials_note  one line for 'info'
+#
+# plus a renderer for its stream output (RENDER_PY_<tool>). The shared code
+# reaches them through "${TOOL}_...".
+
+known_tool() {
+  declare -F "${TOOL}_seed_home" >/dev/null \
+    || die "unknown tool '$TOOL' (known: claude, goose)"
+}
+
+# Deliberately avoids `command -v`, because Claude Code exports itself as a
+# shell function, which a child script would happily inherit and then fail
+# to bind-mount.
+claude_candidates() {
+  printf '%s\n' "${CLAUDEBOX_CLAUDE:-}" "${CLAUDE_CODE_EXECPATH:-}" \
+    "$(type -P claude 2>/dev/null)" "$HOME/.local/bin/claude" "$HOME/.claude/local/claude"
+}
+
+claude_install_hint() {
+  echo "Install it with:  curl -fsSL https://claude.ai/install.sh | bash"
+}
+
+claude_check_binary() {
+  # A '#!' shim means an npm/node install: the binary alone is not enough,
+  # and the EL9 image has no node. Say so rather than failing cryptically.
+  if [ "$(head -c 2 "$TOOL_REAL" 2>/dev/null)" = '#!' ]; then
+    die_hint "$TOOL_REAL is a script wrapper, not the native binary" \
+      "claudebox bind-mounts the claude install into a bare EL9 container," \
+      "which has no node interpreter. Install the native build instead:" \
+      "  curl -fsSL https://claude.ai/install.sh | bash" \
+      "then re-run, or pass --bin /path/to/native/claude."
+  fi
+}
+
+# goose is one self-contained binary (it links only libc and libstdc++), so
+# the same single-file bind works.
+goose_candidates() {
+  printf '%s\n' "${GOOSE_BIN_DIR:+$GOOSE_BIN_DIR/goose}" "$(type -P goose 2>/dev/null)" \
+    "/exp/${EXPERIMENT:-mu2e}/app/users/$USER/goose/bin/goose" "$HOME/.local/bin/goose"
+}
+
+goose_install_hint() {
+  echo "Install it with the Mu2e goose harness (aitools/harness/goose/setup.sh)."
+}
+
+goose_check_binary() { :; }
+
+# Find the agent's executable on the host.
+resolve_tool() {
+  known_tool
+  local cand
+  if [ -n "$TOOL_HOST" ]; then
+    [ -x "$TOOL_HOST" ] || die "--bin: not an executable file: $TOOL_HOST"
+  else
+    while IFS= read -r cand; do
+      if [ -n "$cand" ] && [ -x "$cand" ] && [ -f "$cand" ]; then
+        TOOL_HOST=$cand; break
+      fi
+    done < <("${TOOL}_candidates")
+  fi
+
+  [ -n "$TOOL_HOST" ] || die_hint "cannot find the $TOOL executable" \
+    "$("${TOOL}_install_hint")" \
+    "or point $PROG at an existing copy with --bin PATH."
+
+  TOOL_REAL=$(readlink -f "$TOOL_HOST") || die "cannot resolve $TOOL_HOST"
+  [ -f "$TOOL_REAL" ] || die "$TOOL path is not a regular file: $TOOL_REAL"
+
+  "${TOOL}_check_binary"
+
+  # Only this one file is exposed, under the name the agent expects to be
+  # called by; the rest of the install directory stays outside.
+  TOOL_EXE_IN=$CLAUDE_BIN_IN/$TOOL
+}
+
+preflight() {
+  command -v apptainer >/dev/null 2>&1 || die_hint "apptainer not found" \
+    "claudebox needs apptainer. Run this on a mu2e interactive node" \
+    "(mu2egpvm*) where apptainer is installed."
+
+  [ -d /cvmfs ] || die_hint "/cvmfs is not present on this machine" \
+    "The container image and the mu2e software both live on /cvmfs."
+
+  if [ ! -e "$IMAGE" ]; then
+    die_hint "container image not found: $IMAGE" \
+      "Check that the cvmfs repository is mounted:" \
+      "  ls /cvmfs/singularity.opensciencegrid.org/fermilab/" \
+      "or choose another image with --image."
+  fi
+
+  resolve_tool
+}
+
+# Credentials: copied in fresh on every launch so the token is current, and
+# never copied back out, so a session in the box cannot disturb the host's
+# login state.
+have_api_key() {
+  [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]
+}
+
+# Because the copy is never written back, the box has to refresh on its own
+# if the access token runs out mid-session -- and a refresh token that your
+# host session has meanwhile rotated will be rejected. That shows up as
+# "OAuth session expired and could not be refreshed", which is worth
+# predicting rather than debugging. Re-launching re-copies and fixes it.
+warn_oauth_expiry() {
+  local note
+  note=$(python3 -I - "$1" 2>/dev/null <<'PY'
+import json, sys, time
+try:
+    d = json.load(open(sys.argv[1]))["claudeAiOauth"]
+    left = d["expiresAt"] / 1000.0 - time.time()
+except Exception:
+    sys.exit(0)
+if left <= 0:
+    print("expired")
+elif left < 1800:
+    print("%d minutes" % (left / 60))
+PY
+)
+  case $note in
+    "")        : ;;
+    expired)   warn "the Claude access token is already expired; the box will have to" \
+                    "refresh it, which fails if your host session rotates it first" ;;
+    *)         warn "the Claude access token has only $note left; a long run may need a" \
+                    "refresh, which can be rejected if your host session rotates it first" ;;
+  esac
+}
+
+sync_credentials() {
+  local src=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json
+  local dst=$SBOX_HOME/.claude/.credentials.json
+  if [ -r "$src" ]; then
+    install -m 600 "$src" "$dst" || die "cannot copy credentials into $SBOX_HOME/.claude"
+    warn_oauth_expiry "$dst"
+    return
+  fi
+  have_api_key && return
+  die_hint "no Claude credentials found" \
+    "Expected $src (written when you log in), or an" \
+    "ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN in your environment." \
+    "Run 'claude' on the host once and complete /login, then try again."
+}
+
+# Seed the sandbox home. Idempotent: settings and identity are written once,
+# credentials are refreshed every time, and the work directory is marked
+# trusted so neither mode stops on the folder-trust dialog.
+claude_seed_home() {
+  local workdir=$1
+  # A link here (left from inside the box) would send what is written below
+  # to somewhere on the host.
+  [ -L "$SBOX_HOME/.claude" ] && rm -f "$SBOX_HOME/.claude"
+  [ -L "$SBOX_HOME/.claude/settings.json" ] && rm -f "$SBOX_HOME/.claude/settings.json"
+  mkdir -p "$SBOX_HOME/.claude" || die "cannot create $SBOX_HOME/.claude"
+  chmod 700 "$SBOX_HOME/.claude" 2>/dev/null
+
+  local host_cfg=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+  if [ ! -e "$SBOX_HOME/.claude/settings.json" ] && [ -r "$host_cfg/settings.json" ]; then
+    cp "$host_cfg/settings.json" "$SBOX_HOME/.claude/settings.json" 2>/dev/null
+  fi
+
+  sync_credentials
+
+  # Which of these Claude actually reads depends on whether it honours
+  # CLAUDE_CONFIG_DIR for .claude.json, which has varied between releases.
+  # Seeding both is cheap and keeps either behaviour working.
+  CB_HOST_JSON=$HOME/.claude.json \
+  CB_BOX_JSON="$SBOX_HOME/.claude.json:$SBOX_HOME/.claude/.claude.json" \
+  CB_WORKDIR=$workdir \
+  python3 -I - <<'PY' || die "cannot write the sandbox .claude.json"
+import json, os
+
+host_path = os.environ["CB_HOST_JSON"]
+targets   = [p for p in os.environ["CB_BOX_JSON"].split(":") if p]
+workdir   = os.environ["CB_WORKDIR"]
+
+host = {}
+try:
+    with open(host_path) as f:
+        host = json.load(f)
+except Exception:
+    pass
+
+for box_path in targets:
+    # Read-modify-write: never discard state Claude has written for itself.
+    try:
+        with open(box_path) as f:
+            cfg = json.load(f)
+    except Exception:
+        cfg = {}
+
+    if not cfg:
+        # First run: carry over identity and preferences, but nothing that
+        # describes the host's projects, history or MCP servers.
+        for k in ("userID", "oauthAccount", "firstStartTime", "theme"):
+            if k in host:
+                cfg[k] = host[k]
+        cfg["installMethod"] = "native"
+        cfg["autoUpdates"] = False
+
+    # Re-asserted every launch: a half-written config that lost these would
+    # otherwise stop an unattended agent dead on an interactive prompt.
+    cfg["hasCompletedOnboarding"] = True
+    cfg.setdefault("theme", "dark")
+
+    proj = cfg.setdefault("projects", {}).setdefault(workdir, {})
+    proj["hasTrustDialogAccepted"] = True
+    proj.setdefault("allowedTools", [])
+    proj.setdefault("history", [])
+
+    # The box home is writable from inside the box: a link left where the
+    # temporary file goes must not be followed to a file on the host.
+    tmp = box_path + ".tmp"
+    if os.path.lexists(tmp):
+        os.unlink(tmp)
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "w") as f:
+        json.dump(cfg, f, indent=2)
+    os.replace(tmp, box_path)
+    os.chmod(box_path, 0o600)
+PY
+}
+
+# goose: the sandbox home gets your goose config.yaml -- provider, model and
+# built-in extensions -- but none of its MCP extensions: those can carry
+# tokens in their headers, and the box starts with no MCP servers (see --mcp).
+# Rewritten on every launch, so switching provider or model on the host is
+# followed. secrets.yaml is never copied; see goose_env.
+goose_host_config_dir() {
+  local d
+  for d in "${XDG_CONFIG_HOME:-$HOME/.config}/goose" \
+           "/exp/${EXPERIMENT:-mu2e}/app/users/$USER/goose/config/goose"; do
+    if [ -r "$d/config.yaml" ]; then printf '%s\n' "$d"; return 0; fi
+  done
+  return 1
+}
+
+goose_seed_home() {
+  local box=$SBOX_HOME/.config/goose host d
+  # A link where a folder should be (left from inside the box) would send
+  # what is written here to somewhere on the host.
+  for d in "$SBOX_HOME/.config" "$box"; do
+    [ -L "$d" ] && rm -f "$d"
+  done
+  ( umask 077; mkdir -p "$box" ) || die "cannot create $box"
+
+  if ! host=$(goose_host_config_dir); then
+    [ -r "$box/config.yaml" ] && return 0
+    die_hint "no goose configuration found" \
+      "Expected \${XDG_CONFIG_HOME:-~/.config}/goose/config.yaml." \
+      "Set goose up on the host first (aitools/harness/goose/setup.sh)."
+  fi
+
+  CB_SRC=$host/config.yaml CB_DST=$box/config.yaml python3 -I - <<'PY' \
+    || die "cannot write the sandbox goose config (needs python3 with PyYAML)"
+import os, yaml
+
+cfg = yaml.safe_load(open(os.environ["CB_SRC"])) or {}
+# Keep what ships with goose; drop every extension the user added.
+cfg["extensions"] = {
+    name: ext for name, ext in (cfg.get("extensions") or {}).items()
+    if isinstance(ext, dict) and ext.get("type") in ("platform", "builtin")
+}
+dst = os.environ["CB_DST"]
+# No link left in the box home is followed to a file on the host.
+tmp = dst + ".tmp"
+if os.path.lexists(tmp):
+    os.unlink(tmp)
+with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "w") as f:
+    yaml.safe_dump(cfg, f, sort_keys=False)
+os.replace(tmp, dst)
+PY
+}
+
+seed_home() { "${TOOL}_seed_home" "$@"; }
+
+# ----------------------------------------------------------------- secrets --
+
+# Secrets are collected here as NAME=VALUE and delivered to the container
+# through an --env-file, never through --env.
+#
+# This matters: /proc/<pid>/cmdline is mode 444 on Linux, so anything on a
+# command line is readable by every user on the node via ps. A token passed
+# as --env GH_TOKEN=... would be world-readable for the life of the session.
+# An --env-file puts only a path on the command line, and the file itself is
+# 0600 and deleted when the session ends.
+
+# A token file others can read is a token others have. Worth checking, because
+# the default umask here is 022 -- a hand-created token file comes out 644 --
+# and while /nashome homes are mode 711 (others cannot list them), 711 still
+# permits traversal to an exact path, and the paths claudebox looks in are
+# documented ones. Advisory only: it is the user's file to set as they like.
+warn_insecure_file() {
+  local f=$1 what=$2 perm who=
+  perm=$(stat -c %a "$f" 2>/dev/null) || return 0
+  [ $(( 0$perm & 070 )) -ne 0 ] && who="your group"
+  [ $(( 0$perm & 007 )) -ne 0 ] && who="${who:+$who and }any user on this node"
+  [ -n "$who" ] || return 0
+  warn "$what is mode $perm -- readable by $who: $f"
+  warn "  tighten it with: chmod 600 $f"
+}
+
+add_secret() {
+  local name=$1 value=$2
+  [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
+    || die "'$name' is not a valid environment variable name"
+  [ -n "$value" ] || die "refusing to pass an empty value for $name"
+  case $value in
+    *$'\n'*) die "the value of $name contains a newline, which an env file cannot carry" ;;
+  esac
+  SECRETS+=("$name=$value")
+}
+
+# --secret NAME        take the value from claudebox's own environment
+# --secret NAME=VALUE  take it literally (and warn: see below)
+add_secret_spec() {
+  local spec=$1 name
+  if [[ $spec == *=* ]]; then
+    name=${spec%%=*}
+    warn "--secret $name=VALUE puts that value in claudebox's own command line," \
+         "where other users can read it with ps; prefer --secret-file"
+    add_secret "$name" "${spec#*=}"
+  else
+    [ -n "${!spec:-}" ] || die_hint "\$$spec is not set in your environment" \
+      "Export it first, or read the value from a file instead:" \
+      "  --secret-file $spec=/path/to/tokenfile"
+    add_secret "$spec" "${!spec}"
+  fi
+}
+
+# --secret-file NAME=FILE
+add_secret_file() {
+  local spec=$1 name file
+  [[ $spec == *=* ]] || die_hint "--secret-file needs NAME=FILE, got '$spec'" \
+    "For example:  --secret-file GH_TOKEN=~/.github-pat"
+  name=${spec%%=*}; file=${spec#*=}
+  [ -r "$file" ] || die "--secret-file: cannot read $file"
+  warn_insecure_file "$file" "the file holding $name"
+  # First line only: token files hold one value, and a trailing newline in an
+  # HTTP header or a git credential reply breaks the request.
+  add_secret "$name" "$(head -n1 "$file" | tr -d '\r\n')"
+}
+
+# Writes the collected secrets to a 0600 file and sets SECRET_ENV_ARGS.
+# The file lives outside every bind mount, so it is visible to apptainer on
+# the host but not readable as a file from inside the container.
+write_env_file() {
+  local path=$1
+  SECRET_ENV_ARGS=()
+  [ ${#SECRETS[@]} -gt 0 ] || return 0
+  ( umask 077; printf '%s\n' "${SECRETS[@]}" > "$path" ) \
+    || die "cannot write the secret env file: $path"
+  SECRET_ENV_ARGS=(--env-file "$path")
+}
+
+# ------------------------------------------------- imported host auth --
+
+# --krb5 and --token deliberately punch holes in the sandbox, so both work on
+# *copies*: the container gets its own ticket cache and its own token file,
+# and whatever it does to them cannot reach the originals. In the Kerberos
+# case that is not just caution -- the krb5 library writes service tickets
+# back into the cache it is given, so the copy has to be writable anyway.
+
+# Reports how much life a JWT has left, on stdout, or nothing if it cannot
+# tell. Bearer tokens are short-lived and an expired one fails in ways that
+# look nothing like "your token expired", so it is worth saying up front.
+jwt_expiry_note() {
+  python3 -I - "$1" 2>/dev/null <<'PY'
+import base64, json, sys, time
+try:
+    payload = open(sys.argv[1]).read().strip().split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    exp = json.loads(base64.urlsafe_b64decode(payload))["exp"]
+except Exception:
+    sys.exit(0)
+def span(seconds):
+    if seconds < 3600:
+        return "%d minutes" % (seconds / 60)
+    if seconds < 86400:
+        return "%.1f hours" % (seconds / 3600)
+    return "%.1f days" % (seconds / 86400)
+
+left = exp - time.time()
+if left <= 0:
+    print("EXPIRED %s ago" % span(-left))
+elif left < 3600:
+    print("expires in %s" % span(left))
+else:
+    print("valid for %s" % span(left))
+PY
+}
+
+stage_krb5() {
+  local authdir=$1 cc=$OPT_KRB5_CC
+
+  [ -n "$cc" ] || cc=${KRB5CCNAME:-FILE:/tmp/krb5cc_$(id -u)}
+
+  # Strip the type prefix. Only FILE caches can be copied: KEYRING, KCM and
+  # DIR caches are kernel keyrings, daemon state or multi-file directories,
+  # none of which survive being handed to a container as a single file.
+  case $cc in
+    FILE:*) cc=${cc#FILE:} ;;
+    */*)    : ;;                       # bare path, no type prefix
+    *:*)    die_hint "cannot import a ${cc%%:*} Kerberos cache" \
+              "claudebox can only copy a FILE: ticket cache into the container." \
+              "Make one and point claudebox at it:" \
+              "  kinit -c FILE:/tmp/cb_cc_\$(id -u)" \
+              "  $PROG ... --krb5-ccache /tmp/cb_cc_\$(id -u)" ;;
+  esac
+
+  [ -r "$cc" ] || die_hint "cannot read the Kerberos ticket cache: $cc" \
+    "Run 'kinit' first, check 'klist', or name the cache explicitly with" \
+    "--krb5-ccache FILE."
+
+  install -m 600 "$cc" "$authdir/krb5cc" \
+    || die "cannot stage the Kerberos ticket cache into $authdir"
+
+  local principal note=
+  principal=$(klist -c "$cc" 2>/dev/null | awk -F': *' '/Default principal/{print $2; exit}')
+  if command -v klist >/dev/null 2>&1 && ! klist -s -c "$cc" 2>/dev/null; then
+    note=" (WARNING: no valid ticket -- run kinit)"
+  fi
+
+  AUTH_ENVS+=("KRB5CCNAME=FILE:$AUTH_DIR_IN/krb5cc")
+
+  # The EL9 worker-node image ships a stock krb5.conf with no FNAL realms,
+  # so the copied ticket would be unusable without the host's config.
+  if [ -r /etc/krb5.conf ]; then
+    AUTH_BINDS+=("/etc/krb5.conf:/etc/krb5.conf:ro")
+  else
+    warn "no /etc/krb5.conf on this host; Kerberos inside the box may not resolve realms"
+  fi
+
+  warn "Kerberos imported: ${principal:-$cc}$note -- the container can authenticate as you"
+}
+
+stage_token() {
+  local authdir=$1 tf=$OPT_TOKEN_FILE cand
+
+  if [ -z "$tf" ]; then
+    # WLCG bearer-token discovery order.
+    for cand in "${BEARER_TOKEN_FILE:-}" \
+                "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bt_u$(id -u)" \
+                "/tmp/bt_u$(id -u)"
+    do
+      if [ -n "$cand" ] && [ -r "$cand" ]; then tf=$cand; break; fi
+    done
+  fi
+
+  if [ -n "$tf" ]; then
+    [ -r "$tf" ] || die "cannot read the token file: $tf"
+    warn_insecure_file "$tf" "your bearer token file"
+    install -m 600 "$tf" "$authdir/bt" \
+      || die "cannot stage the token into $authdir"
+  elif [ -n "${BEARER_TOKEN:-}" ]; then
+    # $BEARER_TOKEN carries the token itself rather than a path to one.
+    ( umask 077; printf '%s\n' "$BEARER_TOKEN" > "$authdir/bt" ) \
+      || die "cannot stage \$BEARER_TOKEN into $authdir"
+  else
+    die_hint "no bearer token found to import" \
+      "Looked at \$BEARER_TOKEN_FILE, \$BEARER_TOKEN," \
+      "\$XDG_RUNTIME_DIR/bt_u$(id -u) and /tmp/bt_u$(id -u)." \
+      "Get one with 'getToken', or name it with --token-file FILE."
+  fi
+
+  local note; note=$(jwt_expiry_note "$authdir/bt")
+
+  AUTH_ENVS+=(
+    "BEARER_TOKEN_FILE=$AUTH_DIR_IN/bt"
+    # htgettoken and friends look here; keep them consistent with the copy.
+    "XDG_RUNTIME_DIR=$AUTH_DIR_IN"
+  )
+
+  warn "token imported from ${tf:-\$BEARER_TOKEN}${note:+ ($note)}"
+  case $note in
+    EXPIRED*) warn "that token is expired -- refresh it with 'getToken' and start again" ;;
+  esac
+}
+
+stage_github() {
+  local authdir=$1 tok=${GH_TOKEN:-${GITHUB_TOKEN:-}} src='$GH_TOKEN'
+  [ -n "${GH_TOKEN:-}" ] || src='$GITHUB_TOKEN'
+
+  # Fall back to whatever `gh auth login` already stored, so the common case
+  # needs no extra setup at all.
+  if [ -z "$tok" ] && command -v gh >/dev/null 2>&1; then
+    tok=$(gh auth token 2>/dev/null) && src='gh auth token'
+  fi
+
+  [ -n "$tok" ] || die_hint "no GitHub token found to import" \
+    "Looked at \$GH_TOKEN, \$GITHUB_TOKEN and 'gh auth token'." \
+    "Either export one, run 'gh auth login', or name a file holding it:" \
+    "  --secret-file GH_TOKEN=/path/to/pat"
+
+  add_secret GH_TOKEN     "$tok"
+  add_secret GITHUB_TOKEN "$tok"
+
+  # An environment variable alone only buys you the REST API. git-over-HTTPS
+  # asks a credential helper, so supply one that reads the token back out of
+  # the environment at use time -- that keeps the token out of any config.
+  local helper=$authdir/git-credential-claudebox
+  cat > "$helper" <<'HELPER'
+#!/bin/sh
+# Installed by claudebox: answers git's credential query from $GH_TOKEN.
+[ "$1" = get ] || exit 0
+printf 'username=x-access-token\npassword=%s\n' "$GH_TOKEN"
+HELPER
+  chmod 700 "$helper" || die "cannot prepare the git credential helper"
+
+  # GIT_CONFIG_* injects config without writing to any file. These carry only
+  # a path and a key name, no secret, so the command line is fine for them.
+  AUTH_ENVS+=(
+    "GIT_CONFIG_COUNT=1"
+    "GIT_CONFIG_KEY_0=credential.https://github.com.helper"
+    "GIT_CONFIG_VALUE_0=$AUTH_DIR_IN/git-credential-claudebox"
+  )
+
+  # Lend the container a host gh if there is one. On the gpvm nodes gh is an
+  # RPM at /usr/bin/gh linking only libc and libresolv, so a single-file bind
+  # is enough. Note this shadows any gh in the image, since $CLAUDE_BIN_IN
+  # leads PATH -- drop this bind once the image ships its own.
+  local ghbin; ghbin=$(type -P gh 2>/dev/null)
+  if [ -n "$ghbin" ]; then
+    AUTH_BINDS+=("$(readlink -f "$ghbin"):$CLAUDE_BIN_IN/gh:ro")
+  else
+    info "no gh on this host; the container gets git and \$GH_TOKEN but no gh CLI"
+    info "(bind one in yourself with: --bind /path/to/gh:$CLAUDE_BIN_IN/gh)"
+  fi
+
+  warn "GitHub token imported from $src -- the container can act as you on GitHub"
+}
+
+stage_mikey() {
+  local tok=${MIKEY_TOKEN:-} src='$MIKEY_TOKEN' cand
+  if [ -z "$tok" ]; then
+    for cand in "$HOME/.config/mu2e/mikey-token" "$HOME/.mikey-token"; do
+      if [ -r "$cand" ]; then
+        tok=$(head -n1 "$cand" | tr -d '\r\n'); src=$cand
+        warn_insecure_file "$cand" "your mikey token file"
+        break
+      fi
+    done
+  fi
+
+  [ -n "$tok" ] || die_hint "no mikey token found to import" \
+    "Looked at \$MIKEY_TOKEN, ~/.config/mu2e/mikey-token and ~/.mikey-token." \
+    "Export it, or name the file holding it:" \
+    "  --secret-file MIKEY_TOKEN=/path/to/mikey-token"
+
+  add_secret MIKEY_TOKEN "$tok"
+  warn "mikey token imported from $src"
+
+  # On its own the token does nothing: something has to reference it.
+  [ -n "$OPT_MCP" ] || warn "no --mcp config given, so nothing in the box will use the mikey token"
+}
+
+# Stages whichever credentials were asked for into $1, and fills AUTH_BINDS
+# and AUTH_ENVS for build_appt_args. A no-op unless a credential was asked for.
+stage_auth() {
+  local authdir=$1
+  AUTH_BINDS=(); AUTH_ENVS=()
+
+  # An --mcp config is not a credential, but it is the thing a token like
+  # mikey exists to feed, so it is set up alongside them.
+  if [ -n "$OPT_MCP" ]; then
+    [ -r "$OPT_MCP" ] || die_hint "cannot read the MCP config: $OPT_MCP" \
+      "Give --mcp a JSON file with an \"mcpServers\" object."
+    python3 -I -c 'import json,sys; json.load(open(sys.argv[1]))' "$OPT_MCP" 2>/dev/null \
+      || die_hint "--mcp: $OPT_MCP is not valid JSON" \
+           "Check it with:  python3 -m json.tool $OPT_MCP"
+    AUTH_BINDS+=("$(readlink -f "$OPT_MCP"):$MCP_IN:ro")
+  fi
+
+  if [ "$OPT_KRB5" -eq 1 ] || [ "$OPT_TOKEN" -eq 1 ] || [ "$OPT_GITHUB" -eq 1 ]; then
+    ( umask 077; mkdir -p "$authdir" ) || die "cannot create auth staging dir: $authdir"
+    chmod 700 "$authdir" 2>/dev/null
+    # Read-write on purpose: see the note at the top of this section.
+    AUTH_BINDS+=("$authdir:$AUTH_DIR_IN")
+  fi
+
+  [ "$OPT_KRB5" -eq 1 ]   && stage_krb5   "$authdir"
+  [ "$OPT_TOKEN" -eq 1 ]  && stage_token  "$authdir"
+  [ "$OPT_GITHUB" -eq 1 ] && stage_github "$authdir"
+  [ "$OPT_MIKEY" -eq 1 ]  && stage_mikey
+  return 0
+}
+
+# ---------------------------------------------------------------- workdirs --
+
+# Refuse to bind something so broad that the sandbox stops meaning anything.
+check_workdir() {
+  local d=$1
+  [ -d "$d" ] || die "work directory does not exist: $d"
+  d=$(cd "$d" && pwd -P) || die "cannot resolve work directory: $1"
+
+  local forbidden
+  for forbidden in / /exp /pnfs /cvmfs /nashome /home /scratch "$HOME"; do
+    if [ "$d" = "$forbidden" ]; then
+      die_hint "refusing to bind $d as the work directory" \
+        "That would hand the container most of what claudebox exists to hide." \
+        "Point -C at a specific project directory instead."
+    fi
+  done
+
+  # /exp/<exp>/app, /exp/<exp>/app/users and friends are still far too broad.
+  local depth; depth=$(awk -F/ '{print NF-1}' <<<"$d")
+  if [[ $d == /exp/* || $d == /pnfs/* ]] && [ "$depth" -lt 5 ]; then
+    die_hint "refusing to bind $d as the work directory" \
+      "It is a shared area, not a project. Use a directory of your own," \
+      "at least as deep as /exp/<experiment>/app/users/$USER/<project>."
+  fi
+
+  [ -w "$d" ] || die "work directory is not writable by you: $d"
+  printf '%s\n' "$d"
+}
+
+parse_bind() {
+  # SRC[:DST[:rw]] -> apptainer bind spec, read-only unless rw is requested.
+  local spec=$1 src dst mode
+  IFS=: read -r src dst mode <<<"$spec"
+  [ -n "$src" ] || die "--bind: empty source in '$spec'"
+  [ -e "$src" ] || die "--bind: source does not exist: $src"
+  src=$(readlink -f "$src")
+  dst=${dst:-$src}
+  case ${mode:-ro} in
+    ro) mode=ro ;;
+    rw) mode=rw ;;
+    *)  die "--bind: mode must be 'ro' or 'rw', got '$mode' in '$spec'" ;;
+  esac
+  printf '%s:%s:%s\n' "$src" "$dst" "$mode"
+}
+
+# ------------------------------------------------------- container command --
+
+# Builds APPT_ARGS: the isolation flags, binds and environment shared by
+# every mode. $1 = work directory (host path, mounted at the same path),
+# $2 = host directory to expose as the container's /tmp.
+build_appt_args() {
+  local workdir=$1 tmpdir=$2
+  mkdir -p "$tmpdir" || die "cannot create container tmp dir: $tmpdir"
+
+  APPT_ARGS=(
+    --containall                      # no host env, no host /tmp, own PID ns
+    --no-init --no-umask
+    --home "$SBOX_HOME:$SBOX_HOME_IN"
+    --bind "$tmpdir:/tmp"
+    --bind "/cvmfs:/cvmfs:ro"
+    --bind "$TOOL_REAL:$TOOL_EXE_IN:ro"
+    --bind "$workdir:$workdir"
+  )
+  # Kept separate: 'instance start' has no working directory to set, only the
+  # later 'exec' into the instance does.
+  PWD_ARG=(--pwd "$workdir")
+
+  [ "$OPT_PNFS" -eq 1 ] && APPT_ARGS+=(--bind "/pnfs:/pnfs:ro")
+
+  local b
+  for b in ${AUTH_BINDS+"${AUTH_BINDS[@]}"} ${EXTRA_BINDS+"${EXTRA_BINDS[@]}"}; do
+    APPT_ARGS+=(--bind "$b")
+  done
+
+  # Environment: start from nothing and add back only what is needed.
+  # Note that apptainer refuses --env HOME; --home sets it for us.
+  #
+  # Kept in its own array because 'apptainer exec instance://NAME' does NOT
+  # inherit the --env flags given to 'instance start'. Agent mode has to pass
+  # these twice, once to each call, or the agent runs with a bare default
+  # environment and no idea why nothing is configured.
+  ENV_ARGS=(
+    --env "PATH=$CLAUDE_BIN_IN:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin"
+    --env "CLAUDEBOX=1"
+    --env "AGENTBOX_TOOL=$TOOL"
+    --env "LANG=${LANG:-C.UTF-8}"
+    --env "TERM=${TERM:-xterm-256color}"
+  )
+
+  # The agent's own settings and credentials.
+  "${TOOL}_env" "$tmpdir"
+
+  # KRB5CCNAME / BEARER_TOKEN_FILE etc., pointing at the staged copies.
+  local e
+  for e in ${AUTH_ENVS+"${AUTH_ENVS[@]}"}; do
+    ENV_ARGS+=(--env "$e")
+  done
+
+  [ "$OPT_DISPLAY" -eq 1 ] && [ -n "${DISPLAY:-}" ] && ENV_ARGS+=(--env "DISPLAY=$DISPLAY")
+
+  # Anything sensitive collected by now leaves through a file, not argv.
+  # Appended to ENV_ARGS so both 'instance start' and 'exec' pick it up.
+  write_env_file "$2.env"
+  ENV_ARGS+=(${SECRET_ENV_ARGS+"${SECRET_ENV_ARGS[@]}"})
+
+  return 0
+}
+
+claude_env() {
+  ENV_ARGS+=(
+    --env "CLAUDE_CONFIG_DIR=$SBOX_HOME_IN/.claude"
+    --env "DISABLE_AUTOUPDATER=1"
+  )
+  # ANTHROPIC_BASE_URL / _MODEL are not secrets; the two credentials are, so
+  # they go through the env file with everything else sensitive.
+  local v
+  for v in ANTHROPIC_BASE_URL ANTHROPIC_MODEL; do
+    [ -n "${!v:-}" ] && ENV_ARGS+=(--env "$v=${!v}")
+  done
+  for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; do
+    [ -n "${!v:-}" ] && add_secret "$v" "${!v}"
+  done
+  return 0
+}
+
+# goose reads every config key from the environment first, so the provider
+# settings can be overridden per launch and the key never has to be a file
+# inside the box.
+GOOSE_PLAIN_VARS=(GOOSE_PROVIDER GOOSE_MODEL GOOSE_CONTEXT_LIMIT
+                  OPENAI_HOST OPENAI_BASE_PATH OPENAI_BASE_URL LITELLM_HOST)
+GOOSE_KEY_VARS=(OPENAI_API_KEY LITELLM_API_KEY ANTHROPIC_API_KEY
+                GOOGLE_API_KEY OPENROUTER_API_KEY)
+
+goose_env() {
+  local tmpdir=$1 v found=0 host name value
+  # No keyring in the container: without this goose stops to ask for one.
+  ENV_ARGS+=(--env "GOOSE_DISABLE_KEYRING=1")
+
+  for v in "${GOOSE_PLAIN_VARS[@]}"; do
+    [ -n "${!v:-}" ] && ENV_ARGS+=(--env "$v=${!v}")
+  done
+
+  # Provider keys: from the environment, else from the host's secrets.yaml.
+  # Either way they reach the box as environment (through the env file), the
+  # counterpart of copying Claude's credentials in. A provider that needs no
+  # key (vllm.fnal.gov) leaves the box with nothing secret in it at all.
+  for v in "${GOOSE_KEY_VARS[@]}"; do
+    if [ -n "${!v:-}" ]; then add_secret "$v" "${!v}"; found=1; fi
+  done
+  if [ "$found" -eq 0 ] && host=$(goose_host_config_dir) && [ -r "$host/secrets.yaml" ]; then
+    while IFS='=' read -r name value; do
+      [ -n "$name" ] && add_secret "$name" "$value"
+    done < <(python3 -I - "$host/secrets.yaml" 2>/dev/null <<'PY'
+import re, sys, yaml
+for k, v in (yaml.safe_load(open(sys.argv[1])) or {}).items():
+    if isinstance(v, str) and v and "\n" not in v and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(k)):
+        print(f"{k}={v}")
+PY
+)
+  fi
+
+  [ -n "$OPT_MCP" ] && goose_mcp_config "$tmpdir"
+  return 0
+}
+
+# --mcp for goose. The file is the same JSON claudebox takes ("mcpServers",
+# tokens as ${VAR}), but goose has no --mcp-config and does not expand
+# variables in headers. So: the sandbox config plus these servers, with the
+# values filled in, goes to a private directory under the session's /tmp,
+# and XDG_CONFIG_HOME points goose there. It is removed with the session.
+# The values travel to python on stdin, not on a command line.
+GOOSE_MCP_PY=$(cat <<'PY'
+import json, os, re, sys, yaml
+
+box_cfg, mcp_file, out = sys.argv[1:4]
+# Only what was passed for this run (--secret and the imports): a ${NAME} in
+# the file must not pull an unrelated token out of the caller's environment.
+values = {}
+for line in sys.stdin:
+    name, sep, value = line.rstrip("\n").partition("=")
+    if sep:
+        values[name] = value
+
+def fill(text):
+    def sub(m):
+        if m.group(1) not in values:
+            sys.exit("--mcp: ${%s} is not set; pass it with --secret %s" % (m.group(1), m.group(1)))
+        return values[m.group(1)]
+    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", sub, text)
+
+cfg = yaml.safe_load(open(box_cfg)) or {}
+exts = cfg.setdefault("extensions", {})
+for name, srv in (json.load(open(mcp_file)).get("mcpServers") or {}).items():
+    if "url" in srv:
+        ext = {"enabled": True, "type": "streamable_http", "name": name, "uri": srv["url"],
+               "description": "", "timeout": 300, "bundled": False}
+        if srv.get("headers"):
+            ext["headers"] = {k: fill(str(v)) for k, v in srv["headers"].items()}
+    elif "command" in srv:
+        ext = {"enabled": True, "type": "stdio", "name": name, "cmd": srv["command"],
+               "args": list(srv.get("args") or []), "description": "", "timeout": 300, "bundled": False,
+               "envs": {k: fill(str(v)) for k, v in (srv.get("env") or {}).items()}}
+    else:
+        sys.exit("--mcp: server '%s' has neither a url nor a command" % name)
+    exts[name] = ext
+
+with open(os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+    yaml.safe_dump(cfg, f, sort_keys=False)
+PY
+)
+
+goose_mcp_config() {
+  local priv=$1/.agentbox
+  ( umask 077; mkdir -p "$priv/goose" ) || die "cannot create $priv"
+  printf '%s\n' ${SECRETS+"${SECRETS[@]}"} \
+    | python3 -I -c "$GOOSE_MCP_PY" "$SBOX_HOME/.config/goose/config.yaml" "$OPT_MCP" "$priv/goose/config.yaml" \
+    || die "cannot write the goose MCP configuration"
+  ENV_ARGS+=(--env "XDG_CONFIG_HOME=/tmp/.agentbox")
+}
+
+build_tool_args() { "${TOOL}_args" "$@"; }
+
+# Assembles TOOL_ARGS from the shared options. $1 = default permission mode
+# ('' means leave Claude's own default alone).
+claude_args() {
+  local default_perm=$1
+  TOOL_ARGS=()
+  [ -n "$OPT_MODEL" ] && TOOL_ARGS+=(--model "$OPT_MODEL")
+
+  # --strict-mcp-config so only the servers in this file are loaded: the
+  # sandbox home has no MCP config of its own, and we do not want one
+  # appearing later to widen what the agent can reach.
+  [ -n "$OPT_MCP" ] && TOOL_ARGS+=(--mcp-config "$MCP_IN" --strict-mcp-config)
+
+  local perm=${OPT_PERMMODE:-$default_perm}
+  if [ "$OPT_YOLO" -eq 1 ] && [ -z "$OPT_PERMMODE" ]; then
+    perm=bypassPermissions
+  fi
+  case $perm in
+    "")                 : ;;
+    bypassPermissions)  TOOL_ARGS+=(--dangerously-skip-permissions) ;;
+    *)                  TOOL_ARGS+=(--permission-mode "$perm") ;;
+  esac
+  return 0
+}
+
+# goose takes model and permission mode from the environment (the 'session'
+# command has no --model), so these go to ENV_ARGS rather than the command.
+goose_args() {
+  local default_perm=$1 mode=
+  TOOL_ARGS=()
+  [ -n "$OPT_MODEL" ] && ENV_ARGS+=(--env "GOOSE_MODEL=$OPT_MODEL")
+
+  local perm=${OPT_PERMMODE:-$default_perm}
+  if [ "$OPT_YOLO" -eq 1 ] && [ -z "$OPT_PERMMODE" ]; then
+    perm=bypassPermissions
+  fi
+  case $perm in
+    "")                          : ;;
+    bypassPermissions|auto)      mode=auto ;;
+    smart_approve|approve|chat)  mode=$perm ;;
+    manual)                      mode=approve ;;
+    plan)                        mode=chat ;;
+    *) die_hint "--permission-mode $perm has no goose equivalent" \
+         "goose knows: auto, smart_approve, approve, chat." ;;
+  esac
+  [ -n "$mode" ] && ENV_ARGS+=(--env "GOOSE_MODE=$mode")
+
+  [ -z "$OPT_BUDGET" ] || die_hint "--budget is not available with goose" \
+    "goose has no spending limit. Bound the run with --timeout, or pass" \
+    "'-- --max-turns N' to limit the number of turns."
+  return 0
+}
+
+claude_run_cmd() {
+  RUN_CMD=("$TOOL_EXE_IN" ${TOOL_ARGS+"${TOOL_ARGS[@]}"})
+}
+
+# The prompt goes in on stdin rather than argv: it may be long, and it may
+# begin with a '-' that the option parser would otherwise claim.
+claude_agent_cmd() {
+  AGENT_CMD=("$TOOL_EXE_IN" -p --output-format stream-json --verbose
+             ${TOOL_ARGS+"${TOOL_ARGS[@]}"})
+  [ -n "$OPT_BUDGET" ] && AGENT_CMD+=(--max-budget-usd "$OPT_BUDGET")
+  return 0
+}
+
+goose_run_cmd()   { RUN_CMD=("$TOOL_EXE_IN" session); }
+goose_agent_cmd() { AGENT_CMD=("$TOOL_EXE_IN" run -i - --output-format stream-json); }
+
+claude_credentials_note() {
+  if [ -r "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json" ]; then
+    echo "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"
+  elif have_api_key; then
+    echo "ANTHROPIC_API_KEY from environment"
+  else
+    echo "<none: run 'claude' and /login on the host>"
+  fi
+}
+
+goose_credentials_note() {
+  local host v
+  for v in "${GOOSE_KEY_VARS[@]}"; do
+    if [ -n "${!v:-}" ]; then echo "$v from environment"; return; fi
+  done
+  if host=$(goose_host_config_dir); then
+    if [ -r "$host/secrets.yaml" ]; then echo "$host/secrets.yaml (passed as environment)"
+    else echo "none needed, or none found (config: $host/config.yaml)"; fi
+  else
+    echo "<no goose config found on the host>"
+  fi
+}
+
+# ---------------------------------------------------------- option parsing --
+
+# '-f' means --prompt-file to 'agent' but --follow to 'log'. Each subcommand
+# rewrites it to the long form it wants before the shared parser sees it.
+# Anything after '--' belongs to claude and is left alone.
+map_short_f() {
+  local target=$1; shift
+  MAPPED=()
+  local a seen_ddash=0
+  for a in "$@"; do
+    if [ "$seen_ddash" -eq 0 ] && [ "$a" = "-f" ]; then
+      MAPPED+=("$target")
+    else
+      [ "$a" = "--" ] && seen_ddash=1
+      MAPPED+=("$a")
+    fi
+  done
+}
+
+# Consumes the options common to run/agent/shell, leaving positionals in ARGV.
+parse_common() {
+  ARGV=()
+  while [ $# -gt 0 ]; do
+    case $1 in
+      -C|--workdir)     OPT_WORKDIR=${2:?--workdir needs a directory}; shift 2 ;;
+      -b|--bind)        EXTRA_BINDS+=("$(parse_bind "${2:?--bind needs a spec}")") || exit 1; shift 2 ;;
+      --pnfs)           OPT_PNFS=1; shift ;;
+      --krb5|--kerberos) OPT_KRB5=1; shift ;;
+      --krb5-ccache)    OPT_KRB5=1; OPT_KRB5_CC=${2:?--krb5-ccache needs a path}; shift 2 ;;
+      --token|--scitoken) OPT_TOKEN=1; shift ;;
+      --token-file)     OPT_TOKEN=1; OPT_TOKEN_FILE=${2:?--token-file needs a path}; shift 2 ;;
+      --github|--gh)    OPT_GITHUB=1; shift ;;
+      --mikey)          OPT_MIKEY=1; shift ;;
+      --secret)         add_secret_spec "${2:?--secret needs NAME or NAME=VALUE}"; shift 2 ;;
+      --secret-file)    add_secret_file "${2:?--secret-file needs NAME=FILE}"; shift 2 ;;
+      --mcp)            OPT_MCP=${2:?--mcp needs a JSON file}; shift 2 ;;
+      --display)        OPT_DISPLAY=1; shift ;;
+      --yolo)           OPT_YOLO=1; shift ;;
+      --permission-mode) OPT_PERMMODE=${2:?--permission-mode needs a value}; shift 2 ;;
+      --model)          OPT_MODEL=${2:?--model needs a value}; shift 2 ;;
+      --budget)         OPT_BUDGET=${2:?--budget needs a value}; shift 2 ;;
+      --timeout)        OPT_TIMEOUT=${2:?--timeout needs a value}; shift 2 ;;
+      --prompt-file)    OPT_PROMPT_FILE=${2:?--prompt-file needs a path}; shift 2 ;;
+      --force)          OPT_FORCE=1; shift ;;
+      --all)            OPT_ALL=1; shift ;;
+      --root)           ROOT=${2:?--root needs a directory}; shift 2 ;;
+      --image)          IMAGE=${2:?--image needs a path}; shift 2 ;;
+      --claude|--bin)   TOOL_HOST=${2:?$1 needs a path}; shift 2 ;;
+      --tool)           TOOL=${2:?--tool needs a name}; shift 2 ;;
+      --dry-run)        OPT_DRYRUN=1; shift ;;
+      --follow)         OPT_FOLLOW=1; shift ;;
+      --raw)            OPT_RAW=1; shift ;;
+      # -f means --prompt-file to 'agent' and --follow to 'log'; the
+      # subcommands rewrite it before we get here.
+      -h|--help)        usage; exit 0 ;;
+      --)               shift; PASSTHRU=("$@"); break ;;
+      -)                ARGV+=("$1"); shift ;;   # 'read the prompt from stdin'
+      -*)               die "unknown option '$1' (try '$PROG help')" ;;
+      *)                ARGV+=("$1"); shift ;;
+    esac
+  done
+  return 0
+}
+
+# --------------------------------------------------------------- post hook --
+
+# What $AGENTBOX_POST_HOOK is told. Exported, so that the agent supervisor
+# -- a separate process that outlives this one -- inherits it.
+post_hook_env() {   # mode workdir since [name rundir]
+  export AGENTBOX_MODE=$1 AGENTBOX_WORKDIR=$2 AGENTBOX_SINCE=$3
+  export AGENTBOX_NAME=${4:-} AGENTBOX_RUNDIR=${5:-}
+  export AGENTBOX_TOOL=$TOOL AGENTBOX_HOME=$SBOX_HOME
+}
+
+post_hook() {       # mode workdir since status [name rundir]
+  [ -n "${AGENTBOX_POST_HOOK:-}" ] || return 0
+  if [ ! -x "$AGENTBOX_POST_HOOK" ]; then
+    warn "AGENTBOX_POST_HOOK is not an executable file: $AGENTBOX_POST_HOOK"
+    return 0
+  fi
+  post_hook_env "$1" "$2" "$3" "${5:-}" "${6:-}"
+  # With Ctrl-C ignored: a session is often left by pressing it twice, and
+  # the second one would otherwise end the hook before it has logged.
+  ( trap '' INT; AGENTBOX_STATUS=$4 exec "$AGENTBOX_POST_HOOK" ) \
+    || warn "the post hook failed: $AGENTBOX_POST_HOOK"
+  return 0
+}
+
+# ------------------------------------------------------------- run / shell --
+
+cmd_run() {
+  parse_common "$@"
+  resolve_root
+  preflight
+
+  local workdir
+  workdir=$(check_workdir "${OPT_WORKDIR:-${ARGV[0]:-$PWD}}") || exit 1
+  seed_home "$workdir"
+
+  local tmpdir=$TMP_DIR/session.$$ authdir=$TMP_DIR/auth.$$
+
+  # Armed before anything is staged: a credential that fails validation half
+  # way through must not be left on disk. Expanded now, not at exit, since
+  # these are locals and will be long gone by the time the trap fires.
+  trap "rm -rf '$tmpdir' '$tmpdir.env' '$authdir' 2>/dev/null" EXIT
+
+  stage_auth "$authdir"
+  build_appt_args "$workdir" "$tmpdir"
+  build_tool_args ""
+  "${TOOL}_run_cmd"
+
+  local -a cmd=(apptainer exec "${APPT_ARGS[@]}" "${ENV_ARGS[@]}" "${PWD_ARG[@]}" "$IMAGE"
+                "${RUN_CMD[@]}" ${PASSTHRU+"${PASSTHRU[@]}"})
+
+  if [ "$OPT_DRYRUN" -eq 1 ]; then printf '%q ' "${cmd[@]}"; echo; return 0; fi
+
+  info "work dir $workdir (read-write), /cvmfs read-only, everything else hidden"
+  local since rc
+  since=$(date +%s)
+  "${cmd[@]}"
+  rc=$?
+  post_hook run "$workdir" "$since" "$rc"
+  return $rc
+}
+
+cmd_shell() {
+  parse_common "$@"
+  resolve_root
+  preflight
+
+  local workdir
+  workdir=$(check_workdir "${OPT_WORKDIR:-${ARGV[0]:-$PWD}}") || exit 1
+  seed_home "$workdir"
+
+  local tmpdir=$TMP_DIR/shell.$$ authdir=$TMP_DIR/shellauth.$$
+  trap "rm -rf '$tmpdir' '$tmpdir.env' '$authdir' 2>/dev/null" EXIT
+  stage_auth "$authdir"
+  build_appt_args "$workdir" "$tmpdir"
+
+  local -a cmd=(apptainer exec "${APPT_ARGS[@]}" "${ENV_ARGS[@]}" "${PWD_ARG[@]}" "$IMAGE" /bin/bash --norc -i)
+  if [ "$OPT_DRYRUN" -eq 1 ]; then printf '%q ' "${cmd[@]}"; echo; return 0; fi
+  "${cmd[@]}"
+}
+
+# ------------------------------------------------------------------ agents --
+
+valid_name() {
+  [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die_hint "invalid agent name: '$1'" \
+    "Use letters, digits, '.', '_' and '-', starting with a letter or digit."
+}
+
+instance_name() { printf 'cbx-%s\n' "$1"; }
+
+instance_running() {
+  apptainer instance list 2>/dev/null | awk -v n="$1" 'NR>1 && $1==n {found=1} END{exit !found}'
+}
+
+# apptainer starts an instance through the user's systemd (for its cgroup),
+# which it reaches over that systemd's bus, $XDG_RUNTIME_DIR/bus. It takes
+# the address from DBUS_SESSION_BUS_ADDRESS, though, and that is often
+# something else: unset (tmux or screen started elsewhere, su, a shell
+# inside an agent session), or the bus of a desktop session started with
+# dbus-launch ("unix:abstract=/tmp/dbus-..."), which has no systemd behind
+# it. Either way: "failed to connect to dbus ... could not detect the
+# OwnerUID". So when the systemd bus is there, it is named for this script's
+# own commands, whatever the shell said.
+session_bus_env() {
+  local rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+  [ -S "$rt/bus" ] || rt=/run/user/$(id -u)
+  [ -S "$rt/bus" ] || return 0
+  export XDG_RUNTIME_DIR=$rt
+  export DBUS_SESSION_BUS_ADDRESS=unix:path=$rt/bus
+}
+
+cmd_agent() {
+  OPT_PROMPT_FILE=
+  map_short_f --prompt-file "$@"
+  parse_common ${MAPPED+"${MAPPED[@]}"}
+  resolve_root
+  preflight
+
+  local name=${ARGV[0]:-}
+  [ -n "$name" ] || die_hint "agent needs a name" \
+    "  $PROG agent NAME -f prompt.txt" \
+    "  $PROG agent NAME \"do the thing\""
+  valid_name "$name"
+
+  # Prompt: -f FILE, a positional string, or '-' for stdin.
+  local prompt=
+  if [ -n "$OPT_PROMPT_FILE" ]; then
+    [ -r "$OPT_PROMPT_FILE" ] || die "cannot read prompt file: $OPT_PROMPT_FILE"
+    prompt=$(cat "$OPT_PROMPT_FILE")
+  elif [ "${ARGV[1]:-}" = "-" ]; then
+    [ -t 0 ] && die "prompt is '-' but stdin is a terminal; pipe the prompt in"
+    prompt=$(cat)
+  elif [ -n "${ARGV[1]:-}" ]; then
+    prompt=${ARGV[1]}
+  else
+    die_hint "no prompt given for agent '$name'" \
+      "Supply one with -f FILE, as a quoted argument, or as '-' to read stdin."
+  fi
+  [ -n "${prompt//[[:space:]]/}" ] || die "the prompt is empty"
+
+  local inst; inst=$(instance_name "$name")
+  if instance_running "$inst"; then
+    die_hint "agent '$name' is already running" \
+      "Use '$PROG log $name' to watch it, or '$PROG stop $name' to end it."
+  fi
+
+  local rundir=$RUNS_DIR/$name
+  if [ -e "$rundir" ] && [ "$OPT_FORCE" -eq 0 ]; then
+    die_hint "a previous run of '$name' is still on disk: $rundir" \
+      "Keep it and pick another name, remove it with '$PROG clean $name'," \
+      "or overwrite it with --force."
+  fi
+  rm -rf "$rundir" 2>/dev/null
+  mkdir -p "$rundir/tmp" || die "cannot create run directory: $rundir"
+
+  local workdir
+  workdir=$(check_workdir "${OPT_WORKDIR:-$WORK_DEFAULT}") || exit 1
+  seed_home "$workdir"
+
+  printf '%s\n' "$prompt" > "$rundir/prompt.txt"
+
+  # If anything below fails, the staged credentials must not survive the
+  # failure. Cleared once the supervisor owns them.
+  trap "rm -rf '$rundir/auth' '$rundir/tmp.env' '$rundir/tmp/.agentbox' 2>/dev/null" EXIT
+
+  stage_auth "$rundir/auth"
+  build_appt_args "$workdir" "$rundir/tmp"
+  build_tool_args "bypassPermissions"
+  "${TOOL}_agent_cmd"
+  local -a agent_cmd=("${AGENT_CMD[@]}" ${PASSTHRU+"${PASSTHRU[@]}"})
+
+  # A timeout keeps a confused agent from running until the next maintenance
+  # window. 'none' opts out.
+  local -a timed=()
+  if [ "$OPT_TIMEOUT" != none ]; then
+    timed=(timeout --signal=TERM --kill-after=30s "$OPT_TIMEOUT")
+  fi
+
+  # ENV_ARGS is repeated on the exec: 'instance start' does not pass its
+  # environment on to later execs into that instance.
+  # --cleanenv: an exec into an instance otherwise passes the caller's whole
+  # host environment in -- every exported token included -- which 'run'
+  # (exec --containall) does not.
+  local -a exec_cmd=(apptainer exec --cleanenv "${ENV_ARGS[@]}" "${PWD_ARG[@]}" "instance://$inst"
+                     ${timed+"${timed[@]}"} "${agent_cmd[@]}")
+
+  if [ "$OPT_DRYRUN" -eq 1 ]; then
+    printf 'apptainer instance start '
+    printf '%q ' "${APPT_ARGS[@]}" "${ENV_ARGS[@]}" "$IMAGE" "$inst"; echo
+    printf '%q ' "${exec_cmd[@]}"; printf '< %q\n' "$rundir/prompt.txt"
+    return 0
+  fi
+
+  session_bus_env
+  apptainer instance start "${APPT_ARGS[@]}" "${ENV_ARGS[@]}" "$IMAGE" "$inst" \
+      >>"$rundir/console.log" 2>&1 \
+    || die_hint "could not start the container for agent '$name'" \
+         "See $rundir/console.log for what apptainer said."
+
+  write_meta "$rundir" "$name" "$inst" "$workdir" starting
+
+  post_hook_env agent "$workdir" "$(date +%s)" "$name" "$rundir"
+
+  # Supervisor: runs the agent, records how it ended, tears the instance down.
+  # setsid detaches it from this terminal so it survives logout, and makes it
+  # a session leader so 'stop' can signal the whole process group at once.
+  # It records its own PID, because $! here would be setsid's, not the
+  # leader's.
+  setsid nohup bash -c '
+    rundir=$1; inst=$2; shift 2
+    echo $$ > "$rundir/supervisor.pid"
+    echo running > "$rundir/status"
+    "$@" <"$rundir/prompt.txt" >>"$rundir/stream.jsonl" 2>>"$rundir/console.log"
+    rc=$?
+    echo "$rc" > "$rundir/exit_code"
+    case $rc in
+      0)   echo done    > "$rundir/status" ;;
+      124) echo timeout > "$rundir/status" ;;
+      143) echo stopped > "$rundir/status" ;;
+      *)   echo failed  > "$rundir/status" ;;
+    esac
+    date -u +%Y-%m-%dT%H:%M:%SZ > "$rundir/finished_at"
+    apptainer instance stop "$inst" >>"$rundir/console.log" 2>&1
+    # Do not leave copied tickets, tokens or secrets lying around after the run.
+    rm -rf "$rundir/auth" "$rundir/tmp.env" "$rundir/tmp/.agentbox"
+    if [ -n "${AGENTBOX_POST_HOOK:-}" ] && [ -x "$AGENTBOX_POST_HOOK" ]; then
+      AGENTBOX_STATUS=$rc "$AGENTBOX_POST_HOOK" >>"$rundir/console.log" 2>&1
+    fi
+  ' _ "$rundir" "$inst" "${exec_cmd[@]}" \
+    </dev/null >>"$rundir/console.log" 2>&1 &
+
+  disown 2>/dev/null
+
+  # Give the supervisor a moment to record its PID and status.
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    [ -s "$rundir/supervisor.pid" ] && break
+    sleep 0.2
+  done
+
+  # The supervisor now owns the staged credentials and will remove them.
+  trap - EXIT
+
+  cat >&2 <<EOF
+agent '$name' started
+  work dir  $workdir
+  run dir   $rundir
+  watch     $PROG log $name -f
+  stop      $PROG stop $name
+EOF
+}
+
+write_meta() {
+  local rundir=$1 name=$2 inst=$3 workdir=$4 status=$5
+  echo "$status" > "$rundir/status"
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$rundir/started_at"
+  CB_F=$rundir/meta.json CB_NAME=$name CB_INST=$inst CB_WD=$workdir \
+  CB_TOOL=$TOOL CB_IMG=$IMAGE CB_TO=$OPT_TIMEOUT CB_BUD=${OPT_BUDGET:-} CB_MODEL=${OPT_MODEL:-} \
+  python3 -I - <<'PY'
+import json, os, datetime
+meta = {
+    "name":     os.environ["CB_NAME"],
+    "tool":     os.environ["CB_TOOL"],
+    "instance": os.environ["CB_INST"],
+    "workdir":  os.environ["CB_WD"],
+    "image":    os.environ["CB_IMG"],
+    "timeout":  os.environ["CB_TO"],
+    "budget":   os.environ["CB_BUD"] or None,
+    "model":    os.environ["CB_MODEL"] or None,
+    "started":  datetime.datetime.now(datetime.timezone.utc)
+                        .strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "host":     os.uname().nodename,
+}
+with open(os.environ["CB_F"], "w") as f:
+    json.dump(meta, f, indent=2)
+PY
+}
+
+cmd_list() {
+  parse_common "$@"
+  resolve_root
+
+  shopt -s nullglob
+  local dirs=("$RUNS_DIR"/*/)
+  shopt -u nullglob
+  if [ ${#dirs[@]} -eq 0 ]; then
+    echo "no agents (start one with '$PROG agent NAME -f prompt.txt')"
+    return 0
+  fi
+
+  printf '%-20s %-9s %-20s %s\n' NAME STATUS STARTED WORKDIR
+  local d name status started workdir inst
+  for d in "${dirs[@]}"; do
+    name=$(basename "$d")
+    status=$(cat "$d/status" 2>/dev/null || echo unknown)
+    started=$(cat "$d/started_at" 2>/dev/null || echo -)
+    workdir=$(python3 -I -c 'import json,sys
+try: print(json.load(open(sys.argv[1]))["workdir"])
+except Exception: print("-")' "$d/meta.json" 2>/dev/null || echo -)
+    # A 'running' status with no live instance means something killed it.
+    if [ "$status" = running ]; then
+      inst=$(instance_name "$name")
+      instance_running "$inst" || status="stale"
+    fi
+    printf '%-20s %-9s %-20s %s\n' "$name" "$status" "$started" "$workdir"
+  done
+}
+
+cmd_stop() {
+  parse_common "$@"
+  resolve_root
+  local name=${ARGV[0]:-}
+  [ -n "$name" ] || die "stop needs an agent name (see '$PROG list')"
+  valid_name "$name"
+
+  local rundir=$RUNS_DIR/$name inst; inst=$(instance_name "$name")
+  [ -d "$rundir" ] || die "no such agent: $name (see '$PROG list')"
+
+  local stopped=0
+
+  # Kill the supervisor's process group first, so it does not relaunch or
+  # misreport while the instance is going away.
+  if [ -r "$rundir/supervisor.pid" ]; then
+    local pid; pid=$(cat "$rundir/supervisor.pid")
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+      local i
+      for i in 1 2 3 4 5 6 7 8 9 10; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.5
+      done
+      kill -0 "$pid" 2>/dev/null && kill -KILL -- "-$pid" 2>/dev/null
+      stopped=1
+    fi
+  fi
+
+  if instance_running "$inst"; then
+    apptainer instance stop "$inst" >>"$rundir/console.log" 2>&1 \
+      || warn "apptainer could not stop instance $inst; see $rundir/console.log"
+    stopped=1
+  fi
+
+  if [ "$stopped" -eq 1 ]; then
+    echo stopped > "$rundir/status"
+    date -u +%Y-%m-%dT%H:%M:%SZ > "$rundir/finished_at"
+    # The supervisor was killed before it could do this itself.
+    rm -rf "$rundir/auth" "$rundir/tmp.env" "$rundir/tmp/.agentbox"
+    local since tool
+    since=$(date -d "$(cat "$rundir/started_at" 2>/dev/null)" +%s 2>/dev/null) || since=0
+    tool=$(python3 -I -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("tool") or "claude")
+except Exception: print("claude")' "$rundir/meta.json" 2>/dev/null)
+    TOOL=${tool:-$TOOL} post_hook agent "" "$since" 143 "$name" "$rundir"
+    info "agent '$name' stopped"
+  else
+    info "agent '$name' was not running (status: $(cat "$rundir/status" 2>/dev/null || echo unknown))"
+  fi
+}
+
+cmd_log() {
+  map_short_f --follow "$@"
+  parse_common ${MAPPED+"${MAPPED[@]}"}
+  resolve_root
+  local name=${ARGV[0]:-}
+  [ -n "$name" ] || die "log needs an agent name (see '$PROG list')"
+  valid_name "$name"
+
+  local rundir=$RUNS_DIR/$name
+  [ -d "$rundir" ] || die "no such agent: $name (see '$PROG list')"
+  local stream=$rundir/stream.jsonl
+  [ -e "$stream" ] || die_hint "agent '$name' has produced no output yet" \
+    "If it just started, try again in a moment." \
+    "If it never started, look at $rundir/console.log."
+
+  # In follow mode, tie tail's lifetime to the supervisor's so that -f
+  # returns by itself when the agent finishes, instead of hanging forever.
+  local -a tailcmd=(tail -n +1 -f)
+  if [ "$OPT_FOLLOW" -eq 1 ] && [ -r "$rundir/supervisor.pid" ]; then
+    local pid; pid=$(cat "$rundir/supervisor.pid")
+    [ -n "$pid" ] && tailcmd+=(--pid="$pid")
+  fi
+  tailcmd+=("$stream")
+
+  if [ "$OPT_RAW" -eq 1 ]; then
+    if [ "$OPT_FOLLOW" -eq 1 ]; then "${tailcmd[@]}"; else cat "$stream"; fi
+    return
+  fi
+
+  if [ "$OPT_FOLLOW" -eq 1 ]; then
+    "${tailcmd[@]}" | render_stream "$rundir"
+  else
+    render_stream "$rundir" < "$stream"
+  fi
+}
+
+# Turns Claude's stream-json into something readable. Unknown or malformed
+# records are skipped rather than allowed to break the view.
+# The program is passed with -c, not on stdin: stdin is the data.
+# Each agent has its own stream format; which one a run used is in its
+# meta.json (runs from before that was recorded are Claude's).
+render_stream() {
+  local tool
+  tool=$(python3 -I -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("tool") or "claude")
+except Exception: print("claude")' "$1/meta.json" 2>/dev/null)
+  case $tool in
+    goose) python3 -I -u -c "$RENDER_PY_goose" ;;
+    *)     python3 -I -u -c "$RENDER_PY" ;;
+  esac
+}
+
+RENDER_PY=$(cat <<'PY'
+import json, sys
+
+def brief(d, n=90):
+    s = " ".join(str(d).split())
+    return s if len(s) <= n else s[:n - 1] + "…"
+
+last_text = None
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        ev = json.loads(line)
+    except Exception:
+        continue
+    t = ev.get("type")
+    if t == "system" and ev.get("subtype") == "init":
+        print(f"[init] model={ev.get('model','?')} cwd={ev.get('cwd','?')}")
+    elif t == "assistant":
+        for blk in ev.get("message", {}).get("content", []):
+            if blk.get("type") == "text":
+                txt = blk.get("text", "").strip()
+                if txt:
+                    print(txt)
+                    last_text = txt
+            elif blk.get("type") == "tool_use":
+                inp = blk.get("input", {})
+                arg = inp.get("command") or inp.get("file_path") or \
+                      inp.get("pattern") or inp.get("path") or inp
+                print(f"  → {blk.get('name','tool')}: {brief(arg)}")
+    elif t == "user":
+        for blk in ev.get("message", {}).get("content", []):
+            if blk.get("type") == "tool_result":
+                c = blk.get("content")
+                if isinstance(c, list):
+                    c = " ".join(b.get("text", "") for b in c if isinstance(b, dict))
+                mark = "!" if blk.get("is_error") else "←"
+                print(f"  {mark} {brief(c, 70)}")
+    elif t == "result":
+        cost = ev.get("total_cost_usd")
+        secs = (ev.get("duration_ms") or 0) / 1000.0
+        bits = [f"[{ev.get('subtype', 'result')}]", f"{secs:.0f}s"]
+        if cost is not None:
+            bits.append(f"${cost:.2f}")
+        if ev.get("num_turns") is not None:
+            bits.append(f"{ev['num_turns']} turns")
+        print(" ".join(bits))
+        res = ev.get("result")
+        # The result echoes the final assistant message; don't print it twice.
+        if res and res.strip() != last_text:
+            print(res)
+    sys.stdout.flush()
+PY
+)
+
+# goose's stream-json: one "message" event per streamed piece (text arrives
+# a few characters at a time), tool calls as toolRequest / toolResponse
+# content, and a final "complete" event with the token counts. Lines that
+# are not JSON (the start-up banner) are skipped.
+RENDER_PY_goose=$(cat <<'PY'
+import json, sys
+
+def brief(d, n=90):
+    s = " ".join(str(d).split())
+    return s if len(s) <= n else s[:n - 1] + "…"
+
+open_line = False          # in the middle of streamed text
+
+def end_text():
+    global open_line
+    if open_line:
+        print()
+        open_line = False
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        ev = json.loads(line)
+    except Exception:
+        continue
+    t = ev.get("type")
+    if t == "message":
+        for blk in ev.get("message", {}).get("content", []):
+            kind = blk.get("type")
+            if kind == "text":
+                txt = blk.get("text", "")
+                if txt:
+                    sys.stdout.write(txt)
+                    open_line = not txt.endswith("\n")
+            elif kind == "toolRequest":
+                end_text()
+                call = (blk.get("toolCall") or {}).get("value") or {}
+                args = call.get("arguments") or {}
+                arg = args.get("command") or args.get("path") or args.get("file_path") or args
+                print(f"  → {call.get('name', 'tool')}: {brief(arg)}")
+            elif kind == "toolResponse":
+                end_text()
+                res = blk.get("toolResult") or {}
+                val = res.get("value") or {}
+                c = val.get("content") if isinstance(val, dict) else val
+                if isinstance(c, list):
+                    c = " ".join(b.get("text", "") for b in c if isinstance(b, dict))
+                bad = res.get("status") != "success" or (isinstance(val, dict) and val.get("isError"))
+                print(f"  {'!' if bad else '←'} {brief(c if c else res.get('error', ''), 70)}")
+    elif t == "complete":
+        end_text()
+        print(f"[complete] {ev.get('total_tokens', '?')} tokens "
+              f"({ev.get('input_tokens', '?')} in, {ev.get('output_tokens', '?')} out)")
+    elif t == "error":
+        end_text()
+        print(f"[error] {brief(ev.get('error') or ev, 200)}")
+    sys.stdout.flush()
+end_text()
+PY
+)
+
+cmd_clean() {
+  parse_common "$@"
+  resolve_root
+  local target=${ARGV[0]:-}
+
+  if [ -z "$target" ] && [ "$OPT_ALL" -eq 0 ]; then
+    die_hint "clean needs an agent name or --all" \
+      "  $PROG clean NAME     remove one finished agent's run directory" \
+      "  $PROG clean --all    remove every finished agent's run directory"
+  fi
+
+  local -a names=()
+  if [ "$OPT_ALL" -eq 1 ]; then
+    shopt -s nullglob
+    local d
+    for d in "$RUNS_DIR"/*/; do names+=("$(basename "$d")"); done
+    shopt -u nullglob
+  else
+    valid_name "$target"
+    names=("$target")
+  fi
+
+  local name inst status removed=0
+  for name in ${names+"${names[@]}"}; do
+    inst=$(instance_name "$name")
+    if instance_running "$inst"; then
+      warn "skipping '$name': still running (stop it first)"
+      continue
+    fi
+    status=$(cat "$RUNS_DIR/$name/status" 2>/dev/null || echo unknown)
+    if [ "$status" = running ] || [ "$status" = starting ]; then
+      warn "skipping '$name': status says '$status' but no container is live;" \
+           "run '$PROG stop $name' to tidy it up"
+      continue
+    fi
+    rm -rf "${RUNS_DIR:?}/$name" && removed=$((removed + 1))
+  done
+  info "removed $removed run director$([ $removed -eq 1 ] && echo y || echo ies)"
+}
+
+cmd_info() {
+  parse_common "$@"
+  resolve_root
+  resolve_tool 2>/dev/null || true
+  cat <<EOF
+$PROG $VERSION
+  sandbox root   $ROOT
+  sandbox home   $SBOX_HOME  (-> $SBOX_HOME_IN)
+  agent runs     $RUNS_DIR
+  default work   $WORK_DEFAULT
+  image          $IMAGE $([ -e "$IMAGE" ] && echo "(found)" || echo "(MISSING)")
+  tool           $TOOL
+  executable     ${TOOL_REAL:-<not found>}
+  credentials    $(known_tool; "${TOOL}_credentials_note")
+  apptainer      $(command -v apptainer 2>/dev/null || echo "<not found>")
+EOF
+}
+
+# ---------------------------------------------------------------- dispatch --
+
+[ $# -gt 0 ] || { usage; exit 1; }
+
+sub=$1; shift
+case $sub in
+  run)          cmd_run "$@" ;;
+  agent|start)  cmd_agent "$@" ;;
+  list|ls|ps)   cmd_list "$@" ;;
+  log|logs)     cmd_log "$@" ;;
+  stop|kill)    cmd_stop "$@" ;;
+  clean|rm)     cmd_clean "$@" ;;
+  shell|sh)     cmd_shell "$@" ;;
+  info)         cmd_info "$@" ;;
+  help|-h|--help) usage ;;
+  -v|--version) echo "$PROG $VERSION" ;;
+  -*)           die "unknown option '$sub' (try '$PROG help')" ;;
+  *)            die "unknown command '$sub' (try '$PROG help')" ;;
+esac
