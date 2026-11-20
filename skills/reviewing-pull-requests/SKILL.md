@@ -3,8 +3,8 @@ name: reviewing-pull-requests
 description: Perform effective code review for Mu2e pull requests. Use when reviewing PRs, assessing risk, checking cross-repo impacts, validating tests/builds, and producing actionable reviewer feedback with severity and evidence.
 compatibility: Requires git access, Mu2e offline context, and ability to run targeted checks when needed
 metadata:
-  version: "2.0.0"
-  last-updated: "2026-08-13"
+  version: "2.1.0"
+  last-updated: "2026-11-17"
 ---
 
 # Reviewing Pull Requests
@@ -82,11 +82,14 @@ spend the effort.
    products, paths), then walk the house rules under Subsystem Conventions —
    plus the database/conditions list if the PR touches that layer.
 3. **Check contracts** (code ↔ FHiCL ↔ job config) and cross-repo impact.
-4. **Verify evidence.** If no CI result exists at the current head, trigger
+4. **Check sourced numbers** per "Numbers Against Their Sources". Done when
+   every sourced number in the diff is matched to its source, is a finding,
+   or is listed as not checked with the places tried.
+5. **Verify evidence.** If no CI result exists at the current head, trigger
    one per "Triggering a CI Build".
-5. **Record findings** with severity and evidence, and summarize residual
+6. **Record findings** with severity and evidence, and summarize residual
    risk — per Severity Levels, Evidence Rules and the Output Template above.
-6. **Tighten, then publish** per "Publishing the Review": cut the draft
+7. **Tighten, then publish** per "Publishing the Review": cut the draft
    against the tightening pass, then post it where auto-post is enabled,
    or stage it and report the path where it is not.
 
@@ -162,6 +165,65 @@ Only raise severity when evidence supports it.
 
 ---
 
+## Numbers Against Their Sources
+
+A constant copied from a paper is a claim about that paper, so check it
+against the paper. Checks that the PR's numbers agree with each other — a
+table integrates to the yield its comment states, fit parameters reproduce a
+partial yield quoted in a talk — prove self-consistency. A mistyped parameter
+passes every one of them.
+
+**Which numbers.** Every number the diff adds or changes whose value comes
+from outside the code: fit parameters, measured yields and rates, slopes and
+thresholds, material compositions and densities, and any value a comment
+attributes to a paper, DocDB note, datasheet or person. Particle masses and
+PDG codes already in `ParticleList.txt` or `PDGCode.hh` are sourced by those
+files. A number with no stated origin is house rule 4's finding; trace it
+anyway, since the variable name or the commit usually names the source.
+
+**Where to look.** Work down the list and stop at the first that has the
+source:
+
+1. The knowledge base: `kb_search`, filtered to `inspire-hep` for papers and
+   to `mu2e-docdb` / `mu2e-wiki` for Mu2e notes; `kb_get` for the full text
+   when a hit is an excerpt.
+2. arXiv. Most particle and nuclear physics papers since the mid-1990s are
+   there; INSPIRE or a web search gives the id. Download the PDF into its own
+   fresh directory in your scratch area and read it with
+   `pdftotext -layout`, which keeps tables readable.
+3. Standard references for standard constants: PDG, AME2020 for nuclear
+   masses, NIST for material properties.
+4. For a journal-only paper, a later paper or DocDB note that quotes it,
+   usually in a comparison table. Say the value was checked through the
+   quotation, and name it.
+
+A source missing from the knowledge base sends you to step 2. Write "not
+checked" only after steps 1 to 4, and name the places tried.
+
+**What to compare.** The value, its units, and the range it applies to (an
+energy window, a momentum threshold, a material). A yield copied exactly but
+used as a total when the source measured one window is a finding. Recompute
+whatever the PR derives from the sourced value — a slope from a decay
+constant, a total from a window — and compare. When the source compares the
+quantity with other measurements, report any tension with the value the PR
+chose; that is a modelling choice the code comment should state.
+
+**How to report.** Each matched number is a 🟢 naming the source and the
+table or equation ("Table II of arXiv:1908.06902"). A mismatch is a finding
+at the severity of its physics consequence. A number you could not reach
+goes under residual risk as not checked, with the places tried.
+
+The shape this takes: Offline#2159 added TWIST and AlCap spectrum tables for
+charged particles from muon capture. The first review recomputed every
+integral, reproduced TWIST's partial yields from the PR's parameters, wrote
+"not checked: the spline knots and weights against the paper's appendix,
+which is not in our document search", and the PR was approved. Both papers
+are on arXiv. Checked there, every parameter matched — and the TWIST-based
+proton and deuteron tables came out 12-14% above AlCap's own measurements in
+AlCap's energy windows, a tension no review had mentioned.
+
+---
+
 ## Output Template
 
 The first two lines are what publish gates 1 and 2 check — a draft without
@@ -188,6 +250,7 @@ Reviewed at head `<sha>`. <first pass | re-review of <prev-sha>>
 
 **Validation check**
 - Build/tests run: <yes/no + commands>
+- Sourced numbers: <each matched, with source and table | finding | not checked, with places tried | none in the diff>
 - Config contract check: <pass/fail/partial>
 - Cross-repo consistency: <pass/fail/needs follow-up>
 
@@ -331,7 +394,8 @@ would need editing to change this one thing.
 4. **Unsourced numbers.** Any constant, spectrum table or material
    composition needs its origin in a comment — paper, datasheet, chemical
    formula, or the assumptions behind a mixture. A new data file with no
-   citation is a finding.
+   citation is a finding. A number that does cite its origin is checked
+   against it; see "Numbers Against Their Sources".
 5. **Copies nobody asked for.** Anything larger than a pointer passes by
    `const&`; pass the lowest-level object that does the job (`Straw const&`,
    not `Tracker const&`); dereference a `shared_ptr` once at the top of
