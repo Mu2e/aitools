@@ -37,8 +37,10 @@ source "$hg_setup_dir/env.sh" 2>/dev/null
 if [[ -x "$HEP_GENESIS_ROOT/current/bin/hep-genesis-agent" ]]; then
   hg_have="$(sed -n 's/^hep-genesis //p' "$HEP_GENESIS_ROOT/current/VERSION" 2>/dev/null)"
   hg_want="$(sed -n 's/^ref=//p' "$hg_setup_dir/hep-genesis.pin")"
-  echo "hep-genesis already installed: $HEP_GENESIS_ROOT/current (${hg_have:0:10})"
-  if [[ -n "$hg_want" && "$hg_have" != "$hg_want" ]]; then
+  echo "hep-genesis already installed: $HEP_GENESIS_ROOT/current (${hg_have:0:14})"
+  if [[ "$hg_have" == dev\ * ]]; then
+    echo "  A development install; for the pinned release: bash $hg_setup_dir/install.sh $HEP_GENESIS_ROOT"
+  elif [[ -n "$hg_want" && "$hg_have" != "$hg_want" ]]; then
     echo "  The harness now pins ${hg_want:0:10}. To upgrade: bash $hg_setup_dir/install.sh $HEP_GENESIS_ROOT"
   fi
   unset hg_have hg_want

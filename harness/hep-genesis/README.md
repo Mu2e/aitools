@@ -8,10 +8,12 @@ a chat when a condition is met.
 
 ## Use it (on a gpvm)
 
-First time, from your aitools clone (see [`../README.md`](../README.md)):
+First time:
 
 ```bash
-cd /exp/mu2e/app/users/$USER/aitools/harness/hep-genesis
+cd /exp/mu2e/app/users/$USER
+git clone https://github.com/Mu2e/aitools.git     # skip if you have it already
+cd aitools/harness/hep-genesis
 . setup.sh          # installs (a few minutes), creates your data folder
 hep-genesis-web
 ```
@@ -148,6 +150,20 @@ For more than one, `checks` (named) and `triggers` (a list) take the place of
 `backend/src/hep_genesis/agent/watch.py` in hep-genesis-agent. Files in the
 earlier names (`probes`, `rules`, `chat`) still work; saving one in the web
 form rewrites it in these names.
+
+## Develop hep-genesis-agent
+
+To run your own checkout of hep-genesis-agent with the Mu2e settings, make
+the install a development one:
+
+```bash
+harness/hep-genesis/install.sh /exp/mu2e/app/users/$USER/hep-genesis --src <your checkout>
+```
+
+`setup.sh` and `env.sh` then work as above, and the commands run the
+checkout's code: backend edits count at the next start, the web UI after
+`scripts/build_mu2e_web.sh` in the checkout. The same command without
+`--src` goes back to the pinned release.
 
 ## For maintainers
 

@@ -48,13 +48,15 @@ For goose, the same with `cd aitools/harness/goose` -- see its
 
 ## Install (hep-genesis, on a gpvm)
 
-You need: the same clone, read access to the private repository
+You need: read access to the private repository
 Mu2e/hep-genesis-agent (members of the Mu2e GitHub organization have it;
 an ssh key on GitHub or `gh auth login`), and node >= 20 with npm. The
 default model needs no key.
 
 ```bash
-cd /exp/mu2e/app/users/$USER/aitools/harness/hep-genesis
+cd /exp/mu2e/app/users/$USER
+git clone https://github.com/Mu2e/aitools.git     # skip if you have it already
+cd aitools/harness/hep-genesis
 . setup.sh
 hep-genesis-web
 ```
