@@ -201,6 +201,7 @@ before changing anything in it.
 | `AGENTLOG_MCP_HOST` | `0.0.0.0` | bind address |
 | `AGENTLOG_MCP_DB_SCHEMA` | `agentlog` | schema |
 | `AGENTLOG_MCP_WRITE_ROLE` | `update_role` | role assumed for inserts |
+| `PGGSSENCMODE` | `require` | libpq's standard variable. The connection sets `gssencmode` explicitly — psycopg warns that the built-in default is not reliably `prefer` in `psycopg[binary]` builds, where some behave as `disable`. Authentication is GSSAPI either way; this decides whether the **transport** is GSSAPI-encrypted, which should not vary with how the wheel was built. `require` because the database offers gss encryption (verified against the deployed release, not just `psql` — psycopg bundles its own libpq), so there is no reason to accept a silent plain-text fallback. No `AGENTLOG_MCP_*` name of its own: `disable` is never wanted, and this is a hardening choice to make once for every MCP. If the database ever stops offering gss encryption, `PGGSSENCMODE=prefer` in the unit's `EnvironmentFile` recovers it without a redeploy. |
 | `AGENTLOG_MCP_MAX_BODY_BYTES` | `1048576` | largest accepted report body |
 | `AGENTLOG_MCP_DB_POOL_MAX` | `4` | connection pool size |
 | `AGENTLOG_MCP_LOG_LEVEL` | `INFO` | logger level |
