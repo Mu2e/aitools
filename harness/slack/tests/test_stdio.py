@@ -74,3 +74,24 @@ def test_bare_command_resolves_next_to_interpreter(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", "/nonexistent")
     assert mcp_tools.resolve_command("some-mcp-stdio") == str(tool)
     assert mcp_tools.resolve_command("/abs/path") == "/abs/path"
+
+
+def test_server_down_at_startup_comes_back(tmp_path):
+    """A server that refuses at load() (still starting after a reboot) joins on a later turn."""
+    script = tmp_path / "echo_server.py"   # not there yet: the subprocess fails like a dead server
+
+    async def go():
+        reg = ToolRegistry("", stdio_servers={"echo": [sys.executable, str(script)]})
+        await reg.load()
+        assert not reg.tools and "echo" in reg.failed
+
+        assert await reg.retry_failed(min_interval=0) == []      # still down
+        assert "echo" in reg.failed
+
+        script.write_text(ECHO_SERVER)                           # the server is up now
+        assert await reg.retry_failed(min_interval=3600) == []   # too soon after the last try
+        assert await reg.retry_failed(min_interval=0) == ["echo"]
+        assert list(reg.tools) == ["echo__echo_env"] and not reg.failed
+        assert await reg.retry_failed(min_interval=0) == []      # nothing left to retry
+
+    asyncio.run(go())
