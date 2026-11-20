@@ -158,6 +158,12 @@ fi
   (( ${#imports[@]} )) && echo "- Credential imports requested: ${imports[*]}"
 } > "$box_home/.claude/CLAUDE.md" 2>/dev/null || true
 
+# Skills, as copies: the sources (/exp, this clone) are not mounted inside.
+# $MU2E_BOX_SKILLS limits them: a list ("a,b"), or "none".
+python3 "$shared/link-skills.py" "$box_home/.claude/skills" --copy \
+    ${MU2E_BOX_SKILLS:+--only "$MU2E_BOX_SKILLS"} >/dev/null \
+  || echo "claudebox: the skills were not copied into the box" >&2
+
 # Usage logging by the box script itself, where it supports that.
 hook="$script_dir/../claudebox/log-usage.sh"
 if [[ -x "$hook" ]] && grep -q AGENTBOX_POST_HOOK "$cbx" 2>/dev/null; then

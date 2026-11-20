@@ -136,6 +136,13 @@ if {
   opts+=(--secret GOOSE_MOIM_MESSAGE_FILE)
 fi
 
+# Skills, as copies: the sources (/exp, this clone) are not mounted inside.
+# goose reads ~/.agents/skills, and the box's home is $box_home.
+# $MU2E_BOX_SKILLS limits them: a list ("a,b"), or "none".
+python3 "$shared/link-skills.py" "$box_home/.agents/skills" --copy \
+    ${MU2E_BOX_SKILLS:+--only "$MU2E_BOX_SKILLS"} >/dev/null \
+  || echo "goosebox: the skills were not copied into the box" >&2
+
 # Usage logging, on the host, when the session or the agent ends.
 hook="$script_dir/../claudebox/log-usage.sh"
 [[ -x "$hook" ]] && export AGENTBOX_POST_HOOK="${AGENTBOX_POST_HOOK:-$hook}"

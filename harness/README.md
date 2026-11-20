@@ -135,6 +135,29 @@ The hooks run straight from the shared copy, so a publish takes effect for
 everyone at once -- including a broken one, and a broken guard-rail hook
 fails open. Check before publishing.
 
+## Skills
+
+`setup.sh` of Claude Code and goose links the Mu2e skills of this repository
+([`../skills/`](../skills)) into the harness, and your own next to them. A
+skill is a folder with a `SKILL.md`: instructions the assistant loads when a
+task calls for them (finding data with metacat, building with muse, FHiCL,
+grid jobs, ...).
+
+- **Your own skills** go in `/exp/mu2e/app/users/$USER/skills/<name>/SKILL.md`
+  and are then available in every harness. A skill of yours with the name of
+  a Mu2e one replaces it.
+- **Updates:** a `git pull` updates the linked Mu2e skills. A new skill (in
+  the repository, or one you wrote) appears after the next `. setup.sh`.
+- **Which ones:** [`shared/skills.conf`](shared/skills.conf) lists the
+  sources and the skills that are left out (the pull-request ones). More
+  sources: add a `source` line there, or set `MU2E_SKILL_SOURCES`.
+- **In the box** (`claudebox`, `goosebox`) they are copied in at every start,
+  since the box does not see `/exp`. `MU2E_BOX_SKILLS` limits that, e.g. for
+  an unattended agent: a list (`MU2E_BOX_SKILLS=finding-data-metacat,coding-with-fhicl`)
+  or `none`.
+
+A folder you put into the harness's own skill folder by hand is left alone.
+
 ## What's shared between the harnesses
 
 | Path | What |
@@ -143,6 +166,7 @@ fails open. Check before publishing.
 | `shared/mikey-token.sh`, `shared/getMu2eKey` | Token for the Mu2e MCP servers: from `getMu2eKey` (CVMFS), no personal token file needed |
 | `shared/mcp-headers.sh` | Lets Claude Code fetch that token on each connect instead of storing it |
 | `shared/block_commands.py` | Guard rail that blocks `ssh`/`scp`/`rsync`/`kinit`/`sudo`/`su` in sessions |
+| `shared/link-skills.py`, `shared/skills.conf` | Puts the skills where each harness reads them (see Skills) |
 | `usage/` | Shared usage-record format (`usage_record.py`) and the `usage.sessions` table (`sessions.sql`) |
 
 Usage logs hold counts, timings, model and tool names only -- no user name,

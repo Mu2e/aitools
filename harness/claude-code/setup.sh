@@ -348,9 +348,22 @@ else
         "  Once the registry is reachable: $script_dir/sync-mcp.sh"
 fi
 
-echo "Claude Code ${_claude_version:-(version unknown)} ready, $_mcp_summary. Run: claude"
+
+# Skills: the Mu2e ones of this repository and your own
+# (/exp/mu2e/app/users/$USER/skills), linked into Claude Code's skill folder. See
+# ../shared/link-skills.py and ../shared/skills.conf.
+_skills_summary="skills not linked"
+if _skills_out="$(python3 "$script_dir/../shared/link-skills.py" "$CLAUDE_HOME/.claude/skills" $([[ "$_verbose" == 1 ]] && echo -v) 2>&1)"; then
+  [[ "$_verbose" == 1 ]] && printf '%s\n' "$_skills_out"
+  _skills_summary="$(printf '%s\n' "$_skills_out" | tail -1 | sed 's/ linked into .*//')"
+  case "$_skills_out" in *"of your own kept"*) _skills_summary="$_skills_summary (+ your own)";; esac
+else
+  _warn "Warning: the skills were not linked:" "  $_skills_out"
+fi
+
+echo "Claude Code ${_claude_version:-(version unknown)} ready, $_mcp_summary, $_skills_summary. Run: claude"
 echo "In a new shell, first: . $script_dir/env.sh"
 
 unset script_dir claude_bin settings_file settings_example env_file claude_md_target claude_md_source
-unset _refresh_settings _reset_login _verbose _version _claude_version _sync_out _sync_notes _mcp_count _mcp_summary
+unset _refresh_settings _reset_login _verbose _version _claude_version _sync_out _sync_notes _mcp_count _mcp_summary _skills_out _skills_summary
 unset -f _detail _warn
