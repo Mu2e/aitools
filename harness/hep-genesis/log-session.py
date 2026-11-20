@@ -17,6 +17,10 @@ a hash of the project folder and the chat.
 Where it goes:
     LOG_OUTPUT   a jsonl file, one line per chat, rewritten in place
                  (default: <data folder>/log/usage.jsonl). Always written.
+    LOG_URL      the usage log service (../usage/server), which inserts the
+                 record into the shared table for users, who have no role in
+                 the database. Set by env.sh; empty switches it off. Not used
+                 when LOG_PG_DSN is set.
     LOG_PG_DSN   set: also appended to Postgres (LOG_PG_TABLE, default
                  usage.sessions; insert-only), e.g.
                  "postgresql://ifdb11:5477/mu2e_ai_prd" with Kerberos
@@ -204,6 +208,8 @@ def check() -> int:
     dsn = os.environ.get("LOG_PG_DSN", "").strip()
     if not dsn:
         print("postgres:   off (LOG_PG_DSN is not set)")
+        print(f"service:    {usage_record.log_url() or 'off (LOG_URL is not set)'}"
+              + (f", key {'found' if usage_record.mikey_token() else 'NOT FOUND'}" if usage_record.log_url() else ""))
         return 0
     try:
         from psycopg import sql
@@ -225,19 +231,26 @@ def main(argv: list[str]) -> int:
         print(__doc__, file=sys.stderr)
         return 2
     project_dir, chat = Path(argv[1]), argv[2]
-    turns = chat_turns(project_dir, chat)
-    if not turns:
-        print(f"no usage lines for chat {chat!r} in {project_dir}/provenance/usage.jsonl", file=sys.stderr)
-        return 1
-    record = build_record(project_dir, chat, turns)
     out = output_file(project_dir)
     out.parent.mkdir(parents=True, exist_ok=True)
-    # Turns of different chats can end together, and both the jsonl rewrite and
-    # the backlog are read-modify-replace: one writer at a time.
+    # Turns can end together, and both the jsonl rewrite and the backlogs are
+    # read-modify-replace: one writer at a time. The chat's lines are read
+    # under the same lock, so that a hook that was held up cannot write older
+    # totals over newer ones.
     with (out.parent / ".usage.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        turns = chat_turns(project_dir, chat)
+        if not turns:
+            print(f"no usage lines for chat {chat!r} in {project_dir}/provenance/usage.jsonl", file=sys.stderr)
+            return 1
+        record = build_record(project_dir, chat, turns)
         usage_record.write_jsonl(record, out)
-        send(record, out)
+        if os.environ.get("LOG_PG_DSN", "").strip():
+            send(record, out)             # an account with a role in the database: directly
+        else:
+            # Everyone else: through the usage log service ($LOG_URL), which
+            # inserts it; when it cannot be reached the record waits.
+            usage_record.send(record, usage_record.backlog_path(out))
     return 0
 
 
