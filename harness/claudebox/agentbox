@@ -1360,6 +1360,18 @@ instance_running() {
   apptainer instance list 2>/dev/null | awk -v n="$1" 'NR>1 && $1==n {found=1} END{exit !found}'
 }
 
+# apptainer starts an instance through the user's systemd (for its cgroup),
+# which it reaches over the session bus. A shell that has lost
+# XDG_RUNTIME_DIR or DBUS_SESSION_BUS_ADDRESS (tmux or screen started
+# elsewhere, su, a shell inside an agent session) gets "failed to connect to
+# dbus ... could not detect the OwnerUID". When the bus is there, say where.
+session_bus_env() {
+  local rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+  [ -S "$rt/bus" ] || return 0
+  export XDG_RUNTIME_DIR=$rt
+  export DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=$rt/bus}
+}
+
 cmd_agent() {
   OPT_PROMPT_FILE=
   map_short_f --prompt-file "$@"
@@ -1442,6 +1454,7 @@ cmd_agent() {
     return 0
   fi
 
+  session_bus_env
   apptainer instance start "${APPT_ARGS[@]}" "${ENV_ARGS[@]}" "$IMAGE" "$inst" \
       >>"$rundir/console.log" 2>&1 \
     || die_hint "could not start the container for agent '$name'" \
