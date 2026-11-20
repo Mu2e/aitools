@@ -134,8 +134,13 @@ def fetch_session(db: sqlite3.Connection, session_id: str) -> dict:
     # provider: the gateway from the endpoint ("vllm", "litellm", ...), like
     # the Slack bot -- goose's own provider_name is the protocol slot
     # ("openai" for vllm.fnal.gov and ALCF alike).
+    # goose numbers its sessions per sessions DB ("20260915_2"), and there is
+    # more than one: the harness's own and one in each box home. With $LOG_DB
+    # set (a box), the DB's path is part of the id, or the first session of a
+    # day in a box would be taken for the first one outside it.
+    raw_id = f"{DB_PATH.resolve()}:{s['id']}" if os.environ.get("LOG_DB") else s["id"]
     return usage_record.make_record(
-        "goose", s["id"],
+        "goose", raw_id,
         session_created_at=usage_record.utc_iso(s.get("created_at")),
         session_updated_at=usage_record.utc_iso(s.get("updated_at")),
         provider=usage_record.provider_from_endpoint(

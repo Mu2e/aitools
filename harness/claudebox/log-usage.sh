@@ -22,6 +22,9 @@
 # Never fails the session: always exits 0.
 
 set -uo pipefail
+# Not to be cut short by the Ctrl-C that ended the session (the loggers
+# started below inherit this).
+trap '' INT
 
 home=${AGENTBOX_HOME:-}
 since=${AGENTBOX_SINCE:-0}
