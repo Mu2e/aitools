@@ -22,6 +22,7 @@ system python3.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -152,6 +153,7 @@ def write_jsonl(record: dict, path: Path) -> None:
 BACKLOG_MAX = 2000        # records kept while the service cannot be reached
 SEND_BATCH = 400          # the service takes up to 500 at once
 RETRY_AFTER = 300         # seconds without a new attempt after a failed one
+LOCK_WAIT = 6.0           # seconds a logger waits for another one to finish
 
 
 def log_url() -> str:
@@ -222,6 +224,32 @@ def send(record: dict, backlog: Path, timeout: float = 3.0, retry_after: float =
         return False
     backlog = Path(backlog)
     debug = bool(os.environ.get("LOG_DEBUG"))
+    # One logger at a time reads, sends and clears the backlog: a harness can
+    # run two within a moment (end of turn, end of session), and without this
+    # one could delete a record the other had just put there.
+    lock = None
+    try:
+        backlog.parent.mkdir(parents=True, exist_ok=True)
+        lock = open(backlog.with_name("." + backlog.name + ".lock"), "a")
+        deadline = time.time() + LOCK_WAIT
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.time() > deadline:
+                    break             # the other one is stuck: go on rather than lose the record
+                time.sleep(0.05)
+    except OSError:
+        pass
+    try:
+        return _send_locked(record, backlog, url, timeout, retry_after, debug)
+    finally:
+        if lock is not None:
+            lock.close()              # closing releases the lock
+
+
+def _send_locked(record: dict, backlog: Path, url: str, timeout: float, retry_after: float, debug: bool) -> bool:
     records = _read_lines(backlog) + [record]
     try:
         if len(records) > 1 and time.time() - backlog.stat().st_mtime < retry_after:

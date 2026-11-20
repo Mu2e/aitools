@@ -4,6 +4,7 @@
 """
 
 import json
+import os
 import socket
 import sys
 import threading
@@ -28,11 +29,12 @@ class Store:
     """Stands in for the database: keeps rows, drops repeats, can be down."""
 
     def __init__(self):
-        self.rows, self.down = {}, False
+        self.rows, self.down, self.received = {}, False, 0
 
     def insert(self, records):
         if self.down:
             raise RuntimeError("database is down")
+        self.received += len(records)
         new = 0
         for r in records:
             key = (r["session_id"], r["logged_at"])
@@ -173,6 +175,22 @@ def test_send_and_the_backlog(service, tmp_path, monkeypatch):
     backlog.unlink()
     monkeypatch.setenv("LOG_URL", "")
     assert usage_record.send(record(session_id="goose-6"), backlog) is False and not backlog.exists()
+
+
+def test_two_loggers_at_once_send_the_backlog_once(service, tmp_path):
+    """A harness runs two loggers within a moment. Each record reaches the
+    service once: the second logger waits for the first to clear the backlog."""
+    backlog = tmp_path / "service-backlog.jsonl"
+    backlog.write_text("".join(json.dumps(record(session_id=f"goose-w{i}")) + "\n" for i in range(2)))
+    old = time.time() - 3600
+    os.utime(backlog, (old, old))                    # the last failed attempt was long ago
+    threads = [threading.Thread(target=usage_record.send, args=(record(session_id=f"goose-n{i}"), backlog))
+               for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert service.received == 4 and len(service.rows) == 4 and not backlog.exists()
 
 
 def test_a_rejected_record_does_not_wait_for_good(service, tmp_path, capsys):
