@@ -9,6 +9,7 @@
 #                             bin/      hep-genesis-agent, -web, -service, hep-genesis-watch,
 #                                       hep-genesis-add-automation
 #                             site/ automations/ systemd/ env.sh     from this folder
+#                             usage/    the usage logger (log-session.py)
 #                             VERSION   hep-genesis commit + aitools commit
 #   DEST/current              -> the release just installed
 #   DEST/python/              the Python uv downloaded (shared by the releases)
@@ -160,8 +161,17 @@ uv venv -q "$release/venv" --python 3.12
 uv pip install -q --python "$release/venv/bin/python" -e "$release/src/backend[all]" \
   --constraint "$here/site/constraints.txt"
 
+# For the usage logger's Postgres output (LOG_PG_DSN); without it the logger
+# still writes its jsonl file.
+uv pip install -q --python "$release/venv/bin/python" "psycopg[binary]" \
+  || echo "      NOTE: psycopg not installed: usage records go to the jsonl file only"
+
 echo "[4/5] Site files and commands"
 cp -r "$here/site" "$here/automations" "$here/systemd" "$release/"
+# The usage logger (hep-genesis runs it after every turn: HEP_TURN_HOOK) with
+# the record format it shares with the other harnesses.
+mkdir "$release/usage"
+cp "$here/log-session.py" "$here/../usage/usage_record.py" "$release/usage/"
 cp "$here/env.sh" "$release/env.sh"
 mkdir "$release/bin"
 for cmd in hep-genesis-agent hep-genesis-web hep-genesis-service; do
@@ -170,7 +180,7 @@ done
 cp "$here/bin/hep-genesis-watch" "$here/bin/hep-genesis-add-automation" "$release/bin/"
 chmod 755 "$release/bin/hep-genesis-watch" "$release/bin/hep-genesis-add-automation"
 # Readable by other accounts whatever the modes in the aitools checkout were.
-chmod -R u+rwX,go+rX,go-w "$release/site" "$release/automations" "$release/systemd" "$release/env.sh" "$release/bin"
+chmod -R u+rwX,go+rX,go-w "$release/site" "$release/automations" "$release/systemd" "$release/env.sh" "$release/bin" "$release/usage"
 aitools="$(git -C "$here" rev-parse --short=10 HEAD 2>/dev/null || echo unknown)"
 [[ -z "$(git -C "$here" status --porcelain -- "$here" 2>/dev/null)" ]] || aitools="$aitools+local"
 printf 'hep-genesis %s\naitools %s\ninstalled %s\n' "$commit" "$aitools" "$(date -u +%Y-%m-%dT%H:%MZ)" > "$release/VERSION"

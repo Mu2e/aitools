@@ -21,6 +21,7 @@ and the automations we run.
 | `automations/` | Automation templates, `<project>/<name>.json`. |
 | `bin/` | `hep-genesis-watch`, `hep-genesis-add-automation`. |
 | `systemd/` | The `systemd --user` unit that runs all automations for a service account. |
+| `log-session.py` | Usage logger: a chat's totals in the shared `usage.sessions` format (see Usage logging). |
 
 ## Use it (on a gpvm)
 
@@ -259,6 +260,42 @@ Notes:
 - **With a web UI on the same data folder.** Stop there ends that automation
   until the service restarts; Start runs it from the web server instead of
   the service. To switch one off for good, untick Enabled in its form.
+
+## Usage logging
+
+As in the other harnesses, every chat's usage is recorded in the shared
+format of `usage.sessions` (`harness/usage/`): model, model calls, tokens and
+tool names per chat. No user, no project or chat name, no content; the
+session id is a hash. `interface` is `hep-genesis`.
+
+How it works: hep-genesis itself writes a line per turn to
+`<project>/provenance/usage.jsonl` and then runs the command in
+`HEP_TURN_HOOK`. `env.sh` and the systemd units set that to
+`log-session.py`, which adds up the chat's turns and writes one record per
+chat. It covers the command line, the web UI and the chats automations start.
+
+| Where | Setting | Default |
+|---|---|---|
+| A jsonl file, one line per chat | `LOG_OUTPUT` | `<data folder>/log/usage.jsonl` |
+| Postgres, insert-only | `LOG_PG_DSN` (and `KRB5CCNAME`), in the data folder's `.env` | off |
+
+For the service, as for the Slack bot:
+
+```bash
+# in $D/.env (not secret: Kerberos is the credential)
+LOG_PG_DSN=postgresql://ifdb11:5477/mu2e_ai_prd
+KRB5CCNAME=/tmp/krb5cc_18199_auto
+```
+
+```bash
+set -a; . $D/.env; set +a
+$I/current/venv/bin/python $I/current/usage/log-session.py --check    # where records go; tries Postgres
+```
+
+A record that cannot be sent waits in `pg-backlog.jsonl` next to the jsonl
+file and goes with the next one that can. The logger's own messages are in
+`<project>/provenance/turn-hook.log`. To switch logging off, put
+`HEP_TURN_HOOK=` in the `.env`.
 
 ## Templates
 

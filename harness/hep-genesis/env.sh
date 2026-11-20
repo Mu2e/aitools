@@ -47,6 +47,14 @@ export HEP_SERVERS_FILE="$HG_DATA_DIR/servers.json"
 export HEP_CONTEXT_FILE="$hg_env_dir/site/context.md"
 export HEP_MODEL_PRESETS_FILE="$hg_env_dir/site/models.json"
 
+# Usage accounting, as in the other harnesses: after every turn hep-genesis
+# runs this logger, which writes the chat's counts (model calls, tokens, tool
+# names; no user, no content) to $HG_DATA_DIR/log/usage.jsonl, or where
+# LOG_OUTPUT says. Set HEP_TURN_HOOK= in the .env to switch it off.
+if [ -f "$hg_release/usage/log-session.py" ]; then
+    export HEP_TURN_HOOK="$hg_release/venv/bin/python $hg_release/usage/log-session.py"
+fi
+
 hg_status=0
 if [ -x "$hg_release/bin/hep-genesis-agent" ]; then
     case ":$PATH:" in

@@ -26,6 +26,9 @@ Environment=HEP_ENV_FILE=@ENV_FILE@
 # refuses an .env that sets HEP_CODING.
 Environment=HEP_CODING=0
 Environment=PYTHONUNBUFFERED=1
+# Usage accounting after every turn: counts only, to <data>/log/usage.jsonl,
+# and to Postgres when the .env sets LOG_PG_DSN (and KRB5CCNAME).
+Environment="HEP_TURN_HOOK=@DEPLOY_ROOT@/current/venv/bin/python @DEPLOY_ROOT@/current/usage/log-session.py"
 ExecStart=@DEPLOY_ROOT@/current/bin/hep-genesis-web --port @WEB_PORT@ @WEB_ARGS@
 TimeoutStopSec=15
 # Runs started from the UI are processes of their own: restarting the web
