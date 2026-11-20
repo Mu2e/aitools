@@ -14,7 +14,8 @@ version, an opaque session id. No user, directory or content, and the
 service stores nothing about who sent it.
 
 ```bash
-python3 harness/usage/usage_record.py --check    # address, key found?, service up?
+python3 harness/usage/usage_record.py --check          # address, key found?, service up?
+python3 harness/usage/usage_record.py --summary 30     # the usage of the last 30 days, all harnesses
 ```
 
 - **Off:** `LOG_URL=` (empty) before sourcing a harness's `env.sh`.
@@ -26,6 +27,7 @@ python3 harness/usage/usage_record.py --check    # address, key found?, service 
 | | |
 |---|---|
 | `POST /usage` | one record or a list (up to 500), shaped as [`../usage_record.py`](../usage_record.py) makes them; `Authorization: Bearer <Mu2e key>` (the one from `getMu2eKey` works) |
+| `GET /summary?days=30` | totals of the last 1 to 366 days as JSON (`totals`, `by_model`, `by_day`), from `usage.sessions_current`; the same key |
 | `GET /health` | `{"ok": true, "version": ...}`, no key |
 
 `POST` answers `{"received", "inserted", "rejected"}`. A record of the wrong

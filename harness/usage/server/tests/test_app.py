@@ -48,9 +48,21 @@ def store():
     return Store()
 
 
+SUMMARY = {"days": 7, "totals": {"sessions": 2, "llm_calls": 5, "tool_calls": 1, "input_tokens": 1500000,
+                                 "output_tokens": 900, "cache_read_tokens": 0},
+           "by_model": [{"interface": "goose", "provider": "vllm", "model": "m", "sessions": 2, "llm_calls": 5,
+                         "tool_calls": 1, "input_tokens": 1500000, "output_tokens": 900, "cache_read_tokens": 0}],
+           "by_day": [{"day": "2026-11-19", "interface": "goose", "sessions": 2, "llm_calls": 5, "tool_calls": 1,
+                       "input_tokens": 1500000, "output_tokens": 900, "cache_read_tokens": 0}]}
+
+
+def fake_summary(days):
+    return {**SUMMARY, "days": days}
+
+
 @pytest.fixture
 def client(store):
-    return TestClient(usage_app.create_app(lambda t: t == KEY, store.insert))
+    return TestClient(usage_app.create_app(lambda t: t == KEY, store.insert, fake_summary))
 
 
 def record(**over):
@@ -119,6 +131,15 @@ def test_what_is_not_a_record_or_a_list(client):
     assert client.post("/usage", content=b"[" + b" " * usage_app.MAX_BODY + b"]", headers=AUTH).status_code == 413
 
 
+def test_summary_needs_the_key_and_a_sane_period(client):
+    assert client.get("/summary").status_code == 401
+    assert client.get("/summary", headers={"Authorization": "Bearer nope"}).status_code == 401
+    assert client.get("/summary", headers=AUTH).json()["days"] == 30
+    assert client.get("/summary?days=7", headers=AUTH).json()["totals"]["sessions"] == 2
+    for bad in ("0", "400", "x", "-1"):
+        assert client.get(f"/summary?days={bad}", headers=AUTH).status_code == 400
+
+
 def test_database_down_is_503(client, store):
     store.down = True
     assert client.post("/usage", json=record(), headers=AUTH).status_code == 503
@@ -133,7 +154,7 @@ def service(store, monkeypatch):
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     sock.close()
-    server = uvicorn.Server(uvicorn.Config(usage_app.create_app(lambda t: t == KEY, store.insert),
+    server = uvicorn.Server(uvicorn.Config(usage_app.create_app(lambda t: t == KEY, store.insert, fake_summary),
                                            host="127.0.0.1", port=port, log_level="error"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -197,6 +218,14 @@ def test_a_rejected_record_does_not_wait_for_good(service, tmp_path, capsys):
     backlog = tmp_path / "service-backlog.jsonl"
     assert usage_record.send(record(interface="other"), backlog) is True
     assert not backlog.exists() and "not accepted" in capsys.readouterr().err
+
+
+def test_the_summary_command(service, capsys, monkeypatch):
+    assert usage_record._summary(7) == 0
+    out = capsys.readouterr().out
+    assert "last 7 days" in out and "goose" in out and "1.5M" in out and "2026-11-19" in out
+    monkeypatch.setenv("MIKEY_TOKEN", "wrong")
+    assert usage_record._summary(7) == 1 and "401" in capsys.readouterr().err
 
 
 def test_nothing_listening_keeps_the_record(tmp_path, monkeypatch):

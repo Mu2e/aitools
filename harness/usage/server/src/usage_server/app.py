@@ -8,6 +8,9 @@ for them:
     POST /usage     one record, or a list of records, in the shape of
                     ../usage_record.py (the columns of usage.sessions), with
                     "Authorization: Bearer <mikey key>"
+    GET  /summary   the usage of the last ?days=30 (1 to 366) as JSON, from
+                    usage.sessions_current: per interface and model, and per
+                    day. The same key as for posting.
     GET  /health    {"ok": true, "version": ...}; no key needed
 
 A record is checked for shape and size and then inserted as it is. Nothing
@@ -183,6 +186,39 @@ def pg_count() -> int:
             return cur.fetchone()[0]
 
 
+SUMMARY_SUMS = ("llm_calls", "tool_calls", "input_tokens", "output_tokens", "cache_read_tokens")
+
+
+def pg_summary(days: int) -> dict:
+    """The sessions whose last activity was in the last ``days`` days, from
+    the view that holds each session's latest totals: per interface, provider
+    and model, and per day (UTC) and interface. Turns are left out: the
+    harnesses do not count them the same way."""
+    import psycopg
+    from psycopg import sql
+    from psycopg.rows import dict_row
+
+    table = os.environ.get("LOG_PG_TABLE", "usage.sessions") + "_current"
+    sums = sql.SQL(", ").join(
+        sql.SQL("coalesce(sum({c}), 0)::bigint AS {c}").format(c=sql.Identifier(c)) for c in SUMMARY_SUMS)
+    where = sql.SQL("WHERE session_updated_at > now() - make_interval(days => %s)")
+    t = sql.Identifier(*table.split("."))
+    by_model = sql.SQL(
+        "SELECT interface, provider, model, count(*)::bigint AS sessions, {s} FROM {t} {w} "
+        "GROUP BY 1, 2, 3 ORDER BY input_tokens DESC, sessions DESC").format(s=sums, t=t, w=where)
+    by_day = sql.SQL(
+        "SELECT (session_updated_at AT TIME ZONE 'UTC')::date::text AS day, interface, "
+        "count(*)::bigint AS sessions, {s} FROM {t} {w} GROUP BY 1, 2 ORDER BY 1 DESC, 2").format(s=sums, t=t, w=where)
+    with psycopg.connect(os.environ["LOG_PG_DSN"], connect_timeout=10, gssencmode="prefer",
+                         row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            models = cur.execute(by_model, (days,)).fetchall()
+            per_day = cur.execute(by_day, (days,)).fetchall()
+    totals = {"sessions": sum(r["sessions"] for r in models)}
+    totals.update({c: sum(r[c] for r in models) for c in SUMMARY_SUMS})
+    return {"days": days, "totals": totals, "by_model": models, "by_day": per_day}
+
+
 def mikey_verifier() -> Callable[[str], bool]:
     """True for a key of the mikey key file. The file is read on every call
     (it is small), so a key added or revoked counts at once."""
@@ -198,9 +234,34 @@ def mikey_verifier() -> Callable[[str], bool]:
 # ----------------------------------------------------------------------- app
 
 
-def create_app(verify: Callable[[str], bool], insert: Callable[[list[dict]], int]) -> Starlette:
+def create_app(verify: Callable[[str], bool], insert: Callable[[list[dict]], int],
+               summary: Callable[[int], dict] | None = None) -> Starlette:
     """The service. ``verify`` says whether a bearer token is a valid key;
-    ``insert`` stores cleaned records and returns how many were new."""
+    ``insert`` stores cleaned records and returns how many were new;
+    ``summary`` returns the usage of the last N days."""
+
+    def has_key(request: Request) -> bool:
+        scheme, _, token = request.headers.get("authorization", "").partition(" ")
+        return scheme.lower() == "bearer" and bool(token.strip()) and verify(token.strip())
+
+    no_key = {"error": "a valid mikey key is needed (Authorization: Bearer ...)"}
+
+    async def usage_summary(request: Request) -> JSONResponse:
+        if not has_key(request):
+            return JSONResponse(no_key, status_code=401)
+        try:
+            days = int(request.query_params.get("days", "30"))
+        except ValueError:
+            days = 0
+        if not 1 <= days <= 366:
+            return JSONResponse({"error": "days: a number from 1 to 366"}, status_code=400)
+        if summary is None:
+            return JSONResponse({"error": "no summary here"}, status_code=404)
+        try:
+            return JSONResponse(await run_in_threadpool(summary, days))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("database: %s: %s", type(exc).__name__, exc)
+            return JSONResponse({"error": "the database could not be reached; try again later"}, status_code=503)
 
     async def health(request: Request) -> JSONResponse:
         return JSONResponse({"ok": True, "service": "mu2e-usage-server", "version": service_version()})
@@ -208,12 +269,12 @@ def create_app(verify: Callable[[str], bool], insert: Callable[[list[dict]], int
     async def index(request: Request) -> PlainTextResponse:
         return PlainTextResponse(
             "Mu2e AI usage log service.\n"
-            "POST /usage takes usage records from the harnesses (see aitools harness/usage).\n")
+            "POST /usage takes usage records from the harnesses; GET /summary?days=30 gives the totals.\n"
+            "Both need a Mu2e key. See aitools harness/usage/server.\n")
 
     async def usage(request: Request) -> JSONResponse:
-        scheme, _, token = request.headers.get("authorization", "").partition(" ")
-        if scheme.lower() != "bearer" or not token.strip() or not verify(token.strip()):
-            return JSONResponse({"error": "a valid mikey key is needed (Authorization: Bearer ...)"}, status_code=401)
+        if not has_key(request):
+            return JSONResponse(no_key, status_code=401)
         body = await request.body()
         if len(body) > MAX_BODY:
             return JSONResponse({"error": f"more than {MAX_BODY} bytes"}, status_code=413)
@@ -249,6 +310,7 @@ def create_app(verify: Callable[[str], bool], insert: Callable[[list[dict]], int
         Route("/", index, methods=["GET"]),
         Route("/health", health, methods=["GET"]),
         Route("/usage", usage, methods=["POST"]),
+        Route("/summary", usage_summary, methods=["GET"]),
     ])
 
 
@@ -293,7 +355,7 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit("usage-server: LOG_PG_DSN is not set (e.g. postgresql://ifdb11:5477/mu2e_ai_prd)")
     import uvicorn
 
-    app = create_app(mikey_verifier(), pg_insert)
+    app = create_app(mikey_verifier(), pg_insert, pg_summary)
     # No access log: it would record the address of every sender.
     uvicorn.run(app, host=args.host, port=args.port, access_log=False, log_level="warning")
 

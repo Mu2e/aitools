@@ -14,7 +14,9 @@ A logger writes its record to a local jsonl file (write_jsonl) and hands it
 to the usage log service (send), which inserts it into the shared table:
 users have no role in that database. See server/ next to this file.
 
-    python3 usage_record.py --check     where records go; tries the service
+    python3 usage_record.py --check             where records go; tries the service
+    python3 usage_record.py --summary [DAYS]    the usage of the last DAYS (30) days,
+                                                from the service
 
 Standard library only, Python 3.9+: the loggers run from hooks under the
 system python3.
@@ -305,8 +307,63 @@ def _check() -> int:
         return 1
 
 
+def _n(value) -> str:
+    """12345678 -> "12.3M": token counts are read by magnitude."""
+    value = int(value or 0)
+    for limit, unit in ((1e9, "G"), (1e6, "M"), (1e3, "k")):
+        if value >= limit:
+            return f"{value / limit:.1f}{unit}"
+    return str(value)
+
+
+def _summary(days: int) -> int:
+    """Ask the service for the usage of the last ``days`` days and print it."""
+    url = log_url() or DEFAULT_URL
+    try:
+        req = urllib.request.Request(url.rsplit("/", 1)[0] + f"/summary?days={days}",
+                                     headers={"Authorization": f"Bearer {mikey_token()}"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception as exc:  # noqa: BLE001
+        print(f"no summary from {url}: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    rows = [("interface", "provider", "model", "sessions", "calls", "tools", "input", "output", "cached")]
+    for r in data["by_model"]:
+        rows.append((r["interface"], r["provider"] or "-", r["model"] or "-", str(r["sessions"]), _n(r["llm_calls"]),
+                     _n(r["tool_calls"]), _n(r["input_tokens"]), _n(r["output_tokens"]), _n(r["cache_read_tokens"])))
+    t = data["totals"]
+    rows.append(("total", "", "", str(t["sessions"]), _n(t["llm_calls"]), _n(t["tool_calls"]),
+                 _n(t["input_tokens"]), _n(t["output_tokens"]), _n(t["cache_read_tokens"])))
+    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
+    print(f"Mu2e AI usage, last {data['days']} days (sessions by last activity; input includes cached)\n")
+    for k, r in enumerate(rows):
+        if k in (1, len(rows) - 1):
+            print("  ".join("-" * w for w in widths))
+        print("  ".join(c.ljust(w) if i < 3 else c.rjust(w) for i, (c, w) in enumerate(zip(r, widths))))
+    days_seen: dict = {}
+    for r in data["by_day"]:
+        d = days_seen.setdefault(r["day"], {"sessions": 0, "input": 0, "output": 0, "who": []})
+        d["sessions"] += r["sessions"]
+        d["input"] += r["input_tokens"]
+        d["output"] += r["output_tokens"]
+        d["who"].append(f"{r['interface']} {r['sessions']}")
+    if days_seen:
+        print("\nper day (UTC)   sessions   input  output")
+        for day in sorted(days_seen, reverse=True)[:14]:
+            d = days_seen[day]
+            print(f"{day}      {d['sessions']:>8}  {_n(d['input']):>6}  {_n(d['output']):>6}   {', '.join(d['who'])}")
+    return 0
+
+
+DEFAULT_URL = "http://mu2eaigpvm01.fnal.gov:8199/usage"
+
 if __name__ == "__main__":
     if sys.argv[1:] == ["--check"]:
         sys.exit(_check())
+    if sys.argv[1:2] == ["--summary"]:
+        try:
+            sys.exit(_summary(int(sys.argv[2]) if len(sys.argv) > 2 else 30))
+        except ValueError:
+            pass
     print(__doc__, file=sys.stderr)
     sys.exit(2)
