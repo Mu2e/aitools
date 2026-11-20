@@ -10,6 +10,12 @@ working directory, no content. ``session_id`` is "<interface>-" plus a hash
 of the tool's own session id, so a session's turns stay one row without
 pointing back at a transcript.
 
+A logger writes its record to a local jsonl file (write_jsonl) and hands it
+to the usage log service (send), which inserts it into the shared table:
+users have no role in that database. See server/ next to this file.
+
+    python3 usage_record.py --check     where records go; tries the service
+
 Standard library only, Python 3.9+: the loggers run from hooks under the
 system python3.
 """
@@ -21,6 +27,10 @@ import json
 import os
 import socket
 import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -135,3 +145,140 @@ def write_jsonl(record: dict, path: Path) -> None:
     with os.fdopen(fd, "w") as fh:
         fh.writelines(lines)
     tmp.replace(path)
+
+
+# ------------------------------------------------------- the usage log service
+
+BACKLOG_MAX = 2000        # records kept while the service cannot be reached
+SEND_BATCH = 400          # the service takes up to 500 at once
+RETRY_AFTER = 300         # seconds without a new attempt after a failed one
+
+
+def log_url() -> str:
+    """$LOG_URL: where the usage log service takes records (the harness
+    env.sh sets it). Empty or unset: nothing is sent."""
+    return os.environ.get("LOG_URL", "").strip()
+
+
+def mikey_token() -> str:
+    """The Mu2e key the service asks for, found as shared/mikey-token.sh
+    finds it: $MIKEY_TOKEN, a personal file, else getMu2eKey (CVMFS, or the
+    copy in ../shared). "" when there is none."""
+    token = os.environ.get("MIKEY_TOKEN", "").strip()
+    if token:
+        return token
+    try:
+        token = Path(f"/exp/mu2e/app/users/{os.environ.get('USER', '')}/mikey_token").read_text().strip()
+        if token:
+            return token
+    except OSError:
+        pass
+    for getkey in ("/cvmfs/mu2e.opensciencegrid.org/bin/getMu2eKey",
+                   str(Path(__file__).resolve().parent.parent / "shared" / "getMu2eKey")):
+        if os.access(getkey, os.X_OK):
+            try:
+                out = subprocess.run([getkey], capture_output=True, text=True, timeout=10)
+                if out.returncode == 0 and out.stdout.strip():
+                    return out.stdout.strip().splitlines()[-1].strip()
+            except Exception:
+                pass
+    return ""
+
+
+def _post(url: str, token: str, records: list, timeout: float) -> dict:
+    req = urllib.request.Request(
+        url, data=json.dumps(records, default=str).encode(), method="POST",
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode() or "{}")
+
+
+def _read_lines(path: Path) -> list:
+    out = []
+    try:
+        with open(path) as fh:
+            for line in fh:
+                try:
+                    out.append(json.loads(line))
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    return out
+
+
+def send(record: dict, backlog: Path, timeout: float = 3.0, retry_after: float = RETRY_AFTER) -> bool:
+    """Hand ``record`` to the usage log service, after the records that are
+    still waiting in ``backlog`` (a jsonl file next to the usage log). True
+    when everything was taken. When the service cannot be reached the record
+    is added to the backlog and goes with the next one that gets through;
+    sending one twice is harmless (the table is insert-only on session_id +
+    logged_at). After a failed attempt the next ``retry_after`` seconds'
+    records are only added to the backlog, without trying again: the loggers
+    run after every turn, and a service that is down must not cost each turn
+    a timeout. Never raises, and says nothing unless $LOG_DEBUG is set."""
+    url = log_url()
+    if not url:
+        return False
+    backlog = Path(backlog)
+    debug = bool(os.environ.get("LOG_DEBUG"))
+    records = _read_lines(backlog) + [record]
+    try:
+        if len(records) > 1 and time.time() - backlog.stat().st_mtime < retry_after:
+            raise RuntimeError(f"not tried: the last attempt failed less than {int(retry_after)} s ago")
+        token = mikey_token()
+        if not token:
+            raise RuntimeError("no Mu2e key (MIKEY_TOKEN, mikey_token file, getMu2eKey)")
+        for i in range(0, len(records), SEND_BATCH):
+            answer = _post(url, token, records[i:i + SEND_BATCH], timeout)
+            for bad in answer.get("rejected") or []:
+                # The service will never take these: not kept, or they would wait for good.
+                print(f"usage log: a record was not accepted: {bad.get('error')}", file=sys.stderr)
+        try:
+            backlog.unlink()
+        except OSError:
+            pass
+        return True
+    except Exception as exc:  # noqa: BLE001 - service down, no key, a timeout: it waits
+        if debug:
+            print(f"usage log: not sent to {url}, kept in {backlog}: {type(exc).__name__}: {exc}", file=sys.stderr)
+        try:
+            backlog.parent.mkdir(parents=True, exist_ok=True)
+            lines = [json.dumps(r, default=str) + "\n" for r in records[-BACKLOG_MAX:]]
+            tmp = backlog.with_name(backlog.name + ".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                fh.writelines(lines)
+            tmp.replace(backlog)
+        except OSError:
+            pass
+        return False
+
+
+def backlog_path(jsonl: Path) -> Path:
+    """The file of records waiting for the service, next to a usage log."""
+    return Path(jsonl).with_name("service-backlog.jsonl")
+
+
+def _check() -> int:
+    url = log_url()
+    print(f"service:  {url or '(LOG_URL is not set: nothing is sent)'}")
+    if not url:
+        return 0
+    print(f"key:      {'found' if mikey_token() else 'NOT FOUND (MIKEY_TOKEN, mikey_token file, getMu2eKey)'}")
+    health = url.rsplit("/", 1)[0] + "/health"
+    try:
+        with urllib.request.urlopen(health, timeout=5) as resp:
+            info = json.loads(resp.read().decode())
+        print(f"health:   ok, version {info.get('version')}")
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        print(f"health:   FAILED ({health}): {type(exc).__name__}: {exc}")
+        return 1
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] == ["--check"]:
+        sys.exit(_check())
+    print(__doc__, file=sys.stderr)
+    sys.exit(2)

@@ -279,6 +279,9 @@ def main() -> int:
     parsed = parse_session(jsonl_path)
     record = build_record(parsed)
     usage_record.write_jsonl(record, OUTPUT_FILE)
+    # Also to the usage log service ($LOG_URL), which inserts it into the
+    # shared table; when it cannot be reached the record waits in a backlog.
+    usage_record.send(record, usage_record.backlog_path(OUTPUT_FILE))
 
     print(f"Logged session {record['session_id']}: "
           f"{record['turns']} turns, "

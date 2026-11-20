@@ -187,6 +187,9 @@ def main():
     print()
 
     usage_record.write_jsonl(record, OUTPUT_FILE)
+    # Also to the usage log service ($LOG_URL), which inserts it into the
+    # shared table; when it cannot be reached the record waits in a backlog.
+    usage_record.send(record, usage_record.backlog_path(OUTPUT_FILE))
     print(f"Upserted into: {OUTPUT_FILE}")
 
 

@@ -167,7 +167,11 @@ A folder you put into the harness's own skill folder by hand is left alone.
 | `shared/mcp-headers.sh` | Lets Claude Code fetch that token on each connect instead of storing it |
 | `shared/block_commands.py` | Guard rail that blocks `ssh`/`scp`/`rsync`/`kinit`/`sudo`/`su` in sessions |
 | `shared/link-skills.py`, `shared/skills.conf` | Puts the skills where each harness reads them (see Skills) |
-| `usage/` | Shared usage-record format (`usage_record.py`) and the `usage.sessions` table (`sessions.sql`) |
+| `usage/` | Shared usage-record format (`usage_record.py`), the `usage.sessions` table (`sessions.sql`), and the service that takes the records (`server/`) |
 
 Usage logs hold counts, timings, model and tool names only -- no user name,
-directory or conversation content.
+directory or conversation content. Besides your local `usage.jsonl`, each
+record goes to the [usage log service](usage/server/README.md) on
+mu2eaigpvm01, which adds it to the shared usage table without recording who
+sent it. To keep your records local: `LOG_URL=` (empty) before sourcing
+`env.sh`.
