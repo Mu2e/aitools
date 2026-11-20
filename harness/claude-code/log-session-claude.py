@@ -64,8 +64,10 @@ def find_session_file(session_id: Optional[str]) -> Optional[Path]:
     if not PROJECTS_ROOT.exists():
         return None
 
+    # A session is projects/<project>/<session>.jsonl; the transcripts of its
+    # subagents are deeper (<session>/subagents/) and are not sessions.
     all_files = sorted(
-        PROJECTS_ROOT.rglob("*.jsonl"),
+        (p for p in PROJECTS_ROOT.rglob("*.jsonl") if p.parent.name != "subagents"),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
@@ -85,17 +87,42 @@ def find_session_file(session_id: Optional[str]) -> Optional[Path]:
 # PARSE TRANSCRIPT
 # ---------------------------------------------------------------------------
 
+def _read_jsonl(path: Path) -> list:
+    out = []
+    try:
+        with open(path) as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    out.append(json.loads(raw))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        pass
+    return out
+
+
+def _is_prompt(d: dict) -> bool:
+    """A "user" record the person wrote. Tool results come back as "user"
+    records too, as do notes the client adds itself; neither is a turn."""
+    if d.get("isMeta") or d.get("isSidechain"):
+        return False
+    content = (d.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    blocks = [b for b in content or [] if isinstance(b, dict)]
+    return bool(blocks) and not any(b.get("type") == "tool_result" for b in blocks)
+
+
 def parse_session(jsonl_path: Path) -> dict:
-    lines = []
-    with open(jsonl_path) as f:
-        for raw in f:
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                lines.append(json.loads(raw))
-            except json.JSONDecodeError:
-                continue
+    lines = [(d, False) for d in _read_jsonl(jsonl_path)]
+    # What the session's subagents did is in files of their own, not in the
+    # session's transcript: their model calls, tokens and tool calls belong
+    # to the session's totals all the same.
+    for sub in sorted((jsonl_path.parent / jsonl_path.stem / "subagents").glob("*.jsonl")):
+        lines += [(d, True) for d in _read_jsonl(sub)]
 
     session_id  = jsonl_path.stem
     model       = None
@@ -104,16 +131,18 @@ def parse_session(jsonl_path: Path) -> dict:
     llm_calls   = 0
     tool_calls  = Counter()
     cost_state  = None  # last cost-state entry = session-level totals
-    msg_usage   = {}    # message.id -> usage (fallback when no cost-state)
+    msg_usage   = {}    # message.id -> usage
+    msg_model   = {}    # message.id -> model
 
-    for d in lines:
+    for d, from_subagent in lines:
         t = d.get("type")
         ts = d.get("timestamp")
         if ts:
             timestamps.append(ts)
 
         if t == "user":
-            turns += 1
+            if not from_subagent and _is_prompt(d):
+                turns += 1
 
         elif t == "assistant":
             msg = d.get("message", {})
@@ -126,6 +155,7 @@ def parse_session(jsonl_path: Path) -> dict:
             if mid not in msg_usage:
                 llm_calls += 1
             msg_usage[mid] = msg.get("usage") or {}
+            msg_model[mid] = m
             if not model and m:
                 model = m
             # Tool use blocks in assistant content
@@ -143,36 +173,46 @@ def parse_session(jsonl_path: Path) -> dict:
     created_at = timestamps[0]  if timestamps else None
     updated_at = timestamps[-1] if timestamps else None
 
-    # Extract cumulative token counts from cost-state (best source).
-    # Falls back to summing per-message usage when there is no cost-state.
-    input_tok   = 0
-    output_tok  = 0
-    cache_read  = 0
-    cache_write = 0
-    think_tok   = 0
+    # Token totals. Two sources, and each can be behind the other:
+    #   - cost-state records: Claude Code's own running totals per model.
+    #     They include calls that leave no message in the transcript, but are
+    #     only written now and then, so the last one can be well behind in a
+    #     long session; newer versions do not write them at all.
+    #   - the usage of every message, of the session and its subagents.
+    # Both are lower bounds of what the session used: take the larger.
+    def totals(rows):
+        t = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "thinking": 0}
+        for r in rows:
+            for k in t:
+                t[k] += r.get(k) or 0
+        return t
 
-    if cost_state:
-        # model_usage is a dict keyed by model name -- sum across all models
-        # (shouldn't be more than one in practice, but be safe)
-        for mu in (cost_state.get("modelUsage") or {}).values():
-            input_tok   += mu.get("inputTokens", 0)
-            output_tok  += mu.get("outputTokens", 0)
-            cache_read  += mu.get("cacheReadInputTokens", 0)
-            cache_write += mu.get("cacheCreationInputTokens", 0)
-            think_tok   += mu.get("thinkingTokens", 0)
-        # cost_usd intentionally not logged (privacy / not needed)
-        # Use the model from cost-state if we haven't found one yet
-        if not model and cost_state.get("modelUsage"):
-            model = next(iter(cost_state["modelUsage"]))
-    else:
-        # Newer Claude Code versions no longer write cost-state records;
-        # sum the per-message API usage instead.
-        for u in msg_usage.values():
-            input_tok   += u.get("input_tokens") or 0
-            output_tok  += u.get("output_tokens") or 0
-            cache_read  += u.get("cache_read_input_tokens") or 0
-            cache_write += u.get("cache_creation_input_tokens") or 0
-            think_tok   += (u.get("output_tokens_details") or {}).get("thinking_tokens") or 0
+    by_state = totals(
+        {"input": mu.get("inputTokens"), "output": mu.get("outputTokens"),
+         "cache_read": mu.get("cacheReadInputTokens"), "cache_write": mu.get("cacheCreationInputTokens"),
+         "thinking": mu.get("thinkingTokens")}
+        for mu in ((cost_state or {}).get("modelUsage") or {}).values())
+    by_message = totals(
+        {"input": u.get("input_tokens"), "output": u.get("output_tokens"),
+         "cache_read": u.get("cache_read_input_tokens"), "cache_write": u.get("cache_creation_input_tokens"),
+         "thinking": (u.get("output_tokens_details") or {}).get("thinking_tokens")}
+        for u in msg_usage.values())
+    whole = lambda t: t["input"] + t["cache_read"] + t["cache_write"]  # noqa: E731
+    best = by_state if whole(by_state) > whole(by_message) else by_message
+    input_tok, output_tok = best["input"], best["output"]
+    cache_read, cache_write, think_tok = best["cache_read"], best["cache_write"], best["thinking"]
+    # cost_usd intentionally not logged (privacy / not needed)
+    # The record has one model: the one most of the prompt tokens went to
+    # (a session can switch models, and subagents may use another).
+    per_model: dict = {}
+    for mid, u in msg_usage.items():
+        if msg_model.get(mid):
+            per_model[msg_model[mid]] = per_model.get(msg_model[mid], 0) + (u.get("input_tokens") or 0) \
+                + (u.get("cache_read_input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)
+    if per_model:
+        model = max(per_model, key=per_model.get)
+    elif not model and (cost_state or {}).get("modelUsage"):
+        model = next(iter(cost_state["modelUsage"]))
 
     return {
         "session_id":         session_id,
