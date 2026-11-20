@@ -35,6 +35,9 @@ hidden). `setup.sh` is safe to re-run; it only does what's missing:
 3. Links the Mu2e context `../shared/mu2e.md` as `~/.claude/CLAUDE.md`
    (loaded in every session).
 4. Asks for a backend if none is configured (see [Backends](#backends)).
+   To switch backends later, `. setup.sh --reset-login` moves the stored
+   API key (`.env`) and claude.ai login aside (into `.claude/backups/`) and
+   asks again. `--refresh-settings` doesn't touch the login.
 5. Connects the Mu2e MCP servers from the registry on mu2eaigpvm01.
 
 ## Use
@@ -160,7 +163,7 @@ in the CVMFS `bin`) for a box without the harness defaults.
 | `API Error: 400 ... Invalid model name` | the model name isn't one litellm knows: `./setup-litellm.sh` to refresh the model mapping, then restart claude |
 | claude starts, but replies `Not logged in · Please run /login` | no backend configured: `./setup-litellm.sh`, or `/login` for a subscription |
 | an MCP server shows `✘ Failed` in `claude mcp list` | `./sync-mcp.sh`; the token-gated servers need read access to the Mu2e key (member of `mu2e`) |
-| `/login` seems ignored | a key in `$CLAUDE_HOME/.env` wins -- move the file away |
+| `/login` seems ignored | a key in `$CLAUDE_HOME/.env` wins: `. setup.sh --reset-login`, choose [3], then `/login` |
 | guard rail or usage log not active; `setup.sh` warns about the guard-rail hook | `settings.json` points at an old clone location or predates a template change: `. setup.sh --refresh-settings` |
 
 ## Files
@@ -168,7 +171,7 @@ in the CVMFS `bin`) for a box without the harness defaults.
 | File | Purpose |
 |------|---------|
 | `env.sh` | Source in each shell: `claude` with the harness `$HOME`, Kerberos ticket hidden, private umask |
-| `setup.sh` | Idempotent install + configuration (source it); `--refresh-settings` re-seeds `settings.json` |
+| `setup.sh` | Idempotent install + configuration (source it); `--refresh-settings` re-seeds `settings.json`, `--reset-login` re-chooses the backend |
 | `setup-litellm.sh` | Configure litellm.fnal.gov: key, model mapping |
 | `sync-mcp.sh`, `sync_mcp_claude.py` | Connect the MCP servers from the registry |
 | `settings.json.example` | Template for `settings.json` (the live copy is outside the repo) |

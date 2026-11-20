@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Usage:
-#   . setup.sh [--refresh-settings] [VERSION]   (sourced -- also leaves claude on PATH in your shell)
-#   ./setup.sh [--refresh-settings] [VERSION]   (executed -- installs only, doesn't touch your shell)
+#   . setup.sh [--refresh-settings] [--reset-login] [VERSION]   (sourced -- also leaves claude on PATH in your shell)
+#   ./setup.sh [--refresh-settings] [--reset-login] [VERSION]   (executed -- installs only, doesn't touch your shell)
 #
 # VERSION is optional: stable, latest, or e.g. 2.1.318 (default: latest).
 # Only used for a first install; afterwards Claude Code updates itself.
@@ -11,6 +11,12 @@
 # $CLAUDE_HOME/.claude/backups/. Without it an existing settings.json is
 # never touched, so use this after a harness update that changed the
 # template, or after moving the aitools clone.
+#
+# --reset-login forgets the configured backend (API key in
+# $CLAUDE_HOME/.env, claude.ai login in .claude/.credentials.json; both are
+# moved to $CLAUDE_HOME/.claude/backups/) and shows the backend menu again,
+# e.g. to switch between litellm, an Anthropic API key and a subscription.
+# Settings are independent: --refresh-settings doesn't touch the backend.
 #
 # Idempotent: safe to re-run. Installs the native Claude Code build (no
 # Node.js needed) into $CLAUDE_HOME if not already present, seeds config
@@ -24,27 +30,45 @@
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   cat >&2 <<'USAGE'
 Usage:
-  . setup.sh [--refresh-settings] [stable|latest|VERSION]
-  ./setup.sh [--refresh-settings] [stable|latest|VERSION]
+  . setup.sh [--refresh-settings] [--reset-login] [-v] [stable|latest|VERSION]
+  ./setup.sh [--refresh-settings] [--reset-login] [-v] [stable|latest|VERSION]
 
   --refresh-settings   replace settings.json with the current harness
                        template (the old one is kept in .claude/backups/)
+  --reset-login        forget the API key / claude.ai login and choose a
+                       backend again (old files are kept in .claude/backups/)
+  -v, --verbose        show every step (paths, MCP server sync details)
 USAGE
   return 2 2>/dev/null || exit 2
 fi
 
 _refresh_settings=0
+_reset_login=0
+_verbose=0
 _version=""
 for _arg in "$@"; do
   case "$_arg" in
     --refresh-settings) _refresh_settings=1 ;;
+    --reset-login) _reset_login=1 ;;
+    -v|--verbose) _verbose=1 ;;
     -*) echo "Error: unknown option '$_arg' (see . setup.sh --help)" >&2
-        unset _refresh_settings _version _arg
+        unset _refresh_settings _reset_login _verbose _version _arg
         return 2 2>/dev/null || exit 2 ;;
     *) _version="$_arg" ;;
   esac
 done
 unset _arg
+
+# Output: one summary line unless something needs attention. _detail lines
+# show only with -v; warnings are red on a terminal (not with $NO_COLOR).
+_detail() { [[ "$_verbose" == 1 ]] && echo "$@"; return 0; }
+_warn() {
+  if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
+    printf '\033[1;31m%s\033[0m\n' "$@" >&2
+  else
+    printf '%s\n' "$@" >&2
+  fi
+}
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -95,8 +119,8 @@ if [[ ! -x "$claude_bin" ]]; then
   return 1 2>/dev/null || exit 1
 fi
 
-echo "Claude Code found: $claude_bin"
-HOME="$CLAUDE_HOME" "$claude_bin" --version 2>&1 || true
+_detail "Claude Code found: $claude_bin"
+_claude_version="$(HOME="$CLAUDE_HOME" "$claude_bin" --version 2>/dev/null | awk 'NR==1{print $1}')"
 
 # Write a thin wrapper into CLAUDE_BIN_DIR (first on PATH via env.sh) so
 # `claude` always gets the HOME override, KRB5 scrubbing and umask -- also
@@ -136,7 +160,7 @@ settings_example="$script_dir/settings.json.example"
 if [[ "$_refresh_settings" == 1 && -f "$settings_file" && -f "$settings_example" ]]; then
   _settings_backup="$CLAUDE_HOME/.claude/backups/settings.json.$(date +%Y%m%d-%H%M%S)"
   if mv "$settings_file" "$_settings_backup"; then
-    echo "Refreshing settings.json from the harness template (old one: $_settings_backup)"
+    echo "settings.json replaced with the harness template (old one: $_settings_backup)"
   else
     echo "Error: could not back up $settings_file -- leaving it as it is" >&2
   fi
@@ -144,7 +168,7 @@ if [[ "$_refresh_settings" == 1 && -f "$settings_file" && -f "$settings_example"
 fi
 
 if [[ ! -f "$settings_file" && -f "$settings_example" ]]; then
-  echo "Seeding Claude Code settings from harness template: $settings_file"
+  _detail "Seeding Claude Code settings from harness template: $settings_file"
   # Expand ${CLAUDE_HARNESS_DIR} placeholder to the real hooks directory path.
   hooks_dir="$script_dir/hooks"
   if ! ( umask 077
@@ -159,9 +183,11 @@ fi
 # An existing settings.json is left alone -- but say so if it doesn't run
 # this harness's guard-rail hook (clone moved, or hooks edited out).
 if [[ -f "$settings_file" ]] && ! grep -qF "$script_dir/hooks/block-commands.sh" "$settings_file"; then
-  echo "Warning: $settings_file does not use this harness's guard-rail hook" >&2
-  echo "  ($script_dir/hooks/block-commands.sh) -- set up from another copy of aitools?" >&2
-  echo "  Fix: . $script_dir/setup.sh --refresh-settings   (replaces settings.json, keeps a backup)" >&2
+  _warn "Warning: your settings.json does not use this harness's guard-rail hook" \
+        "  (set up from another copy of aitools?). To fix, keeping a backup:" \
+        "  . $script_dir/setup.sh --refresh-settings"
+  _detail "  settings: $settings_file"
+  _detail "  hook:     $script_dir/hooks/block-commands.sh"
 fi
 
 # ---------------------------------------------------------------------------
@@ -177,14 +203,14 @@ claude_md_source="$(cd "$script_dir/../shared" && pwd)/mu2e.md"
 if [[ -f "$claude_md_source" ]]; then
   if [[ ! -e "$claude_md_target" ]] || [[ "$(readlink "$claude_md_target" 2>/dev/null)" != "$claude_md_source" ]]; then
     ln -sfn "$claude_md_source" "$claude_md_target"
-    echo "Linked CLAUDE.md → $claude_md_source"
+    _detail "Linked CLAUDE.md → $claude_md_source"
   fi
   # Drop the old, ineffective link from earlier versions.
   if [[ "$(readlink "$CLAUDE_HOME/CLAUDE.md" 2>/dev/null)" == "$claude_md_source" ]]; then
     rm -f "$CLAUDE_HOME/CLAUDE.md"
   fi
 else
-  echo "Warning: shared/mu2e.md not found at $claude_md_source -- CLAUDE.md not linked" >&2
+  _warn "Warning: shared/mu2e.md not found at $claude_md_source -- CLAUDE.md not linked"
 fi
 
 # ---------------------------------------------------------------------------
@@ -192,6 +218,26 @@ fi
 # ---------------------------------------------------------------------------
 
 env_file="$CLAUDE_HOME/.env"
+
+# --reset-login: move the stored key / login aside so the menu below
+# shows again. Backups keep the key or login recoverable.
+if [[ "$_reset_login" == 1 ]]; then
+  _stamp="$(date +%Y%m%d-%H%M%S)"
+  for _f in "$env_file" "$CLAUDE_HOME/.claude/.credentials.json"; do
+    [[ -e "$_f" ]] || continue
+    _bak="$CLAUDE_HOME/.claude/backups/$(basename "$_f").$_stamp"
+    if mv "$_f" "$_bak"; then
+      echo "Login reset: moved $_f to $_bak"
+    else
+      echo "Error: could not move $_f aside -- the backend menu may not appear" >&2
+    fi
+  done
+  if [[ -f "$settings_file" ]] && grep -q '"apiKeyHelper"' "$settings_file"; then
+    _warn "Note: settings.json sets apiKeyHelper, which still counts as a backend." \
+          "  Remove it from $settings_file (or use --refresh-settings) to choose another."
+  fi
+  unset _stamp _f _bak
+fi
 
 _has_backend() {
   # Returns 0 if any usable backend is already configured:
@@ -280,15 +326,31 @@ unset -f _has_backend
 # 6. Sync MCP servers from the registry (non-fatal)
 # ---------------------------------------------------------------------------
 
-echo "Syncing MCP servers from the registry..."
-if ! bash "$script_dir/sync-mcp.sh"; then
-  echo "Warning: sync-mcp.sh failed -- Claude Code is installed, but MCP servers weren't synced." \
-       "Run $script_dir/sync-mcp.sh by hand once the registry is reachable." >&2
+_detail "Syncing MCP servers from the registry..."
+_mcp_summary="MCP servers not synced"
+if _sync_out="$(bash "$script_dir/sync-mcp.sh" 2>&1)"; then
+  if [[ "$_verbose" == 1 ]]; then
+    printf '%s\n' "$_sync_out"
+  else
+    # Quiet: only what needs attention (a warning/note and its indented
+    # continuation lines), e.g. no MIKEY token.
+    _sync_notes="$(printf '%s\n' "$_sync_out" | awk '
+      /^(Warning|Note|Error|No token)/ {keep=1; print; next}
+      keep && /^[ \t]/ {print; next}
+      {keep=0}')"
+    [[ -n "$_sync_notes" ]] && _warn "$_sync_notes"
+  fi
+  _mcp_count="$(printf '%s\n' "$_sync_out" | sed -n 's/^\(Added\|Updated\): //p' | tr ',' '\n' | grep -c .)"
+  _mcp_summary="$_mcp_count MCP servers"
+else
+  printf '%s\n' "$_sync_out" >&2
+  _warn "Warning: MCP servers weren't synced (Claude Code itself is installed)." \
+        "  Once the registry is reachable: $script_dir/sync-mcp.sh"
 fi
 
-echo ""
-echo "Done. Run: claude   (or mu2eai-claude)"
-echo "Every new shell needs: . $script_dir/env.sh"
+echo "Claude Code ${_claude_version:-(version unknown)} ready, $_mcp_summary. Run: claude"
+echo "In a new shell, first: . $script_dir/env.sh"
 
 unset script_dir claude_bin settings_file settings_example env_file claude_md_target claude_md_source
-unset _refresh_settings _version
+unset _refresh_settings _reset_login _verbose _version _claude_version _sync_out _sync_notes _mcp_count _mcp_summary
+unset -f _detail _warn
