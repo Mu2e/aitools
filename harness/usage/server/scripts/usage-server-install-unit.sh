@@ -45,7 +45,10 @@ fi
 
 bin_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 venv_dir="$(dirname "$bin_dir")"
-deploy_root="$(dirname "$(dirname "$(dirname "$venv_dir")")")"
+# <deploy-root>/releases/<ref>/.venv, where <ref> may contain a slash (a
+# branch like sc/usage-service): the deploy root is what comes before
+# /releases/, not a fixed number of levels up.
+deploy_root="${venv_dir%%/releases/*}"
 # Through current, so a new release is picked up by a restart alone.
 exec_start="$deploy_root/current/.venv/bin/usage-server"
 [[ -x "$exec_start" ]] || exec_start="$bin_dir/usage-server"
