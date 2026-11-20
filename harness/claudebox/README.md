@@ -42,7 +42,10 @@ selects another.
 the Claude-specific parts moved into `claude_*` functions and a second
 set, `goose_*`, next to them. Called as `goosebox` (a link to it) it runs
 [goose](../goose/README.md); under any other name, or with `--tool claude`,
-Claude Code. Nothing in the harness uses it.
+Claude Code. The goose harness uses it for its `goosebox` command
+([`../goose/goosebox.sh`](../goose/goosebox.sh) adds the Mu2e MCP servers,
+the Mu2e context and usage logging, as `claudebox.sh` does for Claude
+Code); the claude-code harness keeps using `claudebox`.
 
 ```bash
 diff claudebox agentbox             # exactly what moved or was added
@@ -90,5 +93,11 @@ the container (work directory readable, `/exp` absent, `HOME=/home/box`, no
 Kerberos cache), `log`, `list`, an `--mcp` server receiving the filled-in
 header, and the usage record. With Claude Code through the harness wrapper
 on litellm: an `agent` run and a `run` in print mode, including a call to a
-Mu2e MCP server and the usage records. Not tried: a truly interactive
-session with either tool.
+Mu2e MCP server and the usage records.
+
+Interactive sessions (2026-11-19). Claude Code in `agentbox`: a Mu2e MCP
+call, a file written in the work directory, only the work directory visible
+under `/exp`, and the usage record after exit. goose: the same isolation and
+the file. goose through `goosebox.sh`, as an `agent` run on vllm.fnal.gov: a
+Mu2e MCP call, the Mu2e context, and the usage record. `$USER` is not set
+inside the box.

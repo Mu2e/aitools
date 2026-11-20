@@ -100,6 +100,28 @@ not yet known); check that the `plugins:` section of
 `/exp/mu2e/app/users/$USER/goose/config/goose/config.yaml` lists
 `mu2e-guardrails` with `enabled: true`, and start a new session.
 
+### Sandboxed: goosebox
+
+`goosebox` runs goose in an apptainer container that sees only `/cvmfs`
+(read-only) and **one work directory** -- no home, no other `/exp` areas, no
+Kerberos. Unlike the guard rails above, that is real isolation. It is the
+[`agentbox`](../claudebox/README.md) example, the same box `claudebox` is.
+With the harness loaded, `goosebox` gets the harness defaults (via
+`goosebox.sh`): this goose binary with your provider and model, the Mu2e
+MCP servers and their key, and the Mu2e context.
+
+```bash
+cd /exp/mu2e/data/users/$USER/myproject
+goosebox                             # interactive, only this directory writable (= goosebox run)
+goosebox agent nightly -f task.txt   # unattended in the background
+goosebox list | log nightly -f | stop nightly
+goosebox help
+```
+
+The box has its own home (`/exp/mu2e/app/users/$USER/claudebox/`, shared
+with `claudebox`). Sessions and agent runs are added to the usage log when
+they end.
+
 ### Optional: local tracing (OpenTelemetry → Jaeger)
 
 ```bash
@@ -126,6 +148,7 @@ ssh -L 16686:localhost:16686 <this-host>
 | `setup.sh` | Idempotent install + env setup (source or run) |
 | `install.sh` | Raw binary installer (called by setup.sh) |
 | `sync-mcp.sh` | Sync MCP servers from the internal registry |
+| `goosebox.sh` | Front end for `goosebox` (goose in a container): adds the Mu2e MCP servers, context and usage logging |
 | `goose-model.sh` | Interactive model/backend picker (`mu2eai-model`) |
 | `otel.sh` | Start/stop/status local Jaeger for tracing |
 | `alcf.sh` | Switch to an ALCF inference endpoint |
