@@ -149,6 +149,8 @@ class Conversation:
         idle = time.monotonic() - self.last_active
         self.usage.turns += 1
         self._expire_images(idle)
+        # A server that was down when the bot started may be up by now.
+        await self.tools.retry_failed()
         now = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
         self.messages.append({"role": "user", "content": f"[{now}] {text}"})
 

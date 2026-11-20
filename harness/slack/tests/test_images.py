@@ -69,6 +69,9 @@ class Tools:
     def __init__(self, images=(PNG,)):
         self._images = images
 
+    async def retry_failed(self):
+        return []
+
     async def call(self, name, arguments, images=None):
         for data in self._images:
             images.append(ToolImage(data=data, mime="image/png", name="fig.png"))
