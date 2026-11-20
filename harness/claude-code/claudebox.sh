@@ -38,6 +38,12 @@ cbx="${CLAUDEBOX_BIN:-$script_dir/../claudebox/claudebox}"
 # shellcheck source=/dev/null
 [[ -n "${CLAUDE_HOME:-}" && -f "$CLAUDE_HOME/.env" ]] && source "$CLAUDE_HOME/.env"
 
+# The box script copies the login, the account details and the settings from
+# $HOME. Give it the harness's home, as the `claude` function does: otherwise
+# it takes whatever login is in your real home, which may be an old one that
+# has expired while the harness's is fine.
+[[ -n "${CLAUDE_HOME:-}" && -d "$CLAUDE_HOME/.claude" ]] && export HOME="$CLAUDE_HOME"
+
 sub="${1:-}"
 case "$sub" in
   run|agent|start|shell|sh) shift ;;
