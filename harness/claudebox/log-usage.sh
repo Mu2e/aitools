@@ -54,7 +54,7 @@ case "$tool" in
       LOG_DB="$db" XDG_CONFIG_HOME="$home/.config" \
         python3 "$harness/goose/log-session.py" "$id" >/dev/null \
         || echo "log-usage: could not log goose session $id" >&2
-    done < <(python3 - "$db" "$since" 2>/dev/null <<'PY'
+    done < <(python3 -I - "$db" "$since" 2>/dev/null <<'PY'
 import sqlite3, sys
 db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
 # updated_at is UTC text, as SQLite's datetime() writes it.

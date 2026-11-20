@@ -45,16 +45,55 @@ OPT_WITH_VALUE = {
 # Shell keywords after which the next word is still a command.
 KEYWORDS = {"if", "then", "else", "elif", "while", "until", "do", "{", "!"}
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-# <<EOF, <<-EOF, <<'EOF', << "EOF" -- but not the here-string <<<.
-HEREDOC = re.compile(r"""(?<!<)<<(-?)\s*(['"]?)(\w+)\2""")
+# <<EOF, <<-EOF, <<'EOF', << "EOF", <<\\EOF at a given place in a line.
+HEREDOC = re.compile(r"""<<(-?)\s*(\\?)(['"]?)(\w+)\3""")
 WORD = re.compile(r"[\w./-]+")
 
 
+def _heredoc_ops(line: str):
+    """(dash, quoted, marker) for every here-document operator of the line
+    that the shell would see as one: not inside quotes, not in a comment,
+    and not the here-string <<<. `echo '<<EOF'` starts no here-document."""
+    ops, quote, i, n = [], "", 0, len(line)
+    while i < n:
+        c = line[i]
+        if quote:
+            if c == "\\" and quote == '"':
+                i += 2
+                continue
+            if c == quote:
+                quote = ""
+            i += 1
+        elif c == "\\":
+            i += 2
+        elif c in "'\"":
+            quote = c
+            i += 1
+        elif c == "#" and (i == 0 or line[i - 1].isspace()):
+            break
+        elif line.startswith("<<<", i):
+            i += 3
+        elif line.startswith("<<", i):
+            m = HEREDOC.match(line, i)
+            if m:
+                ops.append((m.group(1), bool(m.group(2) or m.group(3)), m.group(4)))
+                i = m.end()
+            else:
+                i += 2
+        else:
+            i += 1
+    return ops
+
+
 def _strip_heredocs(cmd: str) -> str:
-    """Drop here-document bodies: they are data, not commands (a README
-    written with `cat <<EOF` may well mention ssh). Kept when the line
-    feeds a shell (`bash <<EOF`), where the body is what gets run, and
-    when the end marker is missing (then it probably wasn't a heredoc)."""
+    """Drop here-document bodies that are data, not commands (a README
+    written with `cat <<EOF` may well mention ssh). Kept:
+      - the whole body when the line feeds a shell (`bash <<EOF`): it is
+        what gets run;
+      - of a body the shell expands (the marker is not quoted), the lines
+        with a command substitution: `cat <<EOF` runs the $(...) in it;
+      - everything when the end marker is missing (then it probably was
+        not a here-document)."""
     lines = cmd.split("\n")
     out, i = [], 0
     while i < len(lines):
@@ -62,13 +101,15 @@ def _strip_heredocs(cmd: str) -> str:
         out.append(line)
         i += 1
         to_shell = any(os.path.basename(w) in SHELLS for w in WORD.findall(line))
-        for dash, _, marker in HEREDOC.findall(line):
+        for dash, quoted, marker in _heredoc_ops(line):
             end = next((j for j in range(i, len(lines))
                         if (lines[j].lstrip("\t") if dash else lines[j]) == marker), None)
             if end is None:
                 break
             if to_shell:
                 out.extend(lines[i:end])
+            elif not quoted:
+                out.extend(l for l in lines[i:end] if "$(" in l or "`" in l)
             i = end + 1
     return "\n".join(out)
 

@@ -72,7 +72,7 @@ How goose differs inside the box:
 | `--budget` | `--max-budget-usd` | not available (refused with a hint) |
 | unattended run | `claude -p --output-format stream-json` | `goose run -i - --output-format stream-json` |
 
-Two further changes in `agentbox`, neither specific to goose:
+Further changes in `agentbox`, none specific to goose:
 
 - **Usage logging.** `$AGENTBOX_POST_HOOK` names an executable that the
   script runs on the host, outside the sandbox, when a `run` session or an
@@ -87,6 +87,14 @@ Two further changes in `agentbox`, neither specific to goose:
   exported token included. `run` is not affected. `agentbox` adds
   `--cleanenv` to that one call. This is worth taking into `claudebox`
   whatever happens to the rest of the example.
+
+- **What runs on the host is kept apart from what the box can write.**
+  The script's Python helpers run isolated (`python3 -I`), so a `yaml.py`
+  or `json.py` left in the launch directory is not imported on the host;
+  files written into the box home (which a session can fill with links) are
+  created without following a link; and `${NAME}` in an `--mcp` file is
+  filled only from what was passed for the run, not from the whole
+  environment. The first two also apply to `claudebox`.
 
 Tried on mu2egpvm with goose 1.57.0 on vllm.fnal.gov: an `agent` run in
 the container (work directory readable, `/exp` absent, `HOME=/home/box`, no

@@ -34,6 +34,7 @@ case "$sub" in
   ""|-*) sub=run ;;
   *) if [[ -d "$sub" ]]; then sub=run; else exec "$gbx" "$@"; fi ;;
 esac
+[[ "$sub" == start ]] && sub=agent    # an alias: an agent's default work directory, not $PWD
 
 # Same root the box script will use: --root, $CLAUDEBOX_ROOT, else the /exp area.
 root="${CLAUDEBOX_ROOT:-/exp/${EXPERIMENT:-mu2e}/app/users/$USER/claudebox}"
@@ -46,6 +47,12 @@ for a in "$@"; do
 done
 box_home="$root/home"
 box_cfg="$box_home/.config/goose"
+# The box home is writable by whatever ran in the box before. A link left
+# there, where a folder or file is expected, must not send what is written
+# here on the host to somewhere else: links are removed, files replaced.
+for d in "$box_home/.config" "$box_cfg" "$box_home/.agents" "$box_home/.agents/skills"; do
+  [[ -L "$d" ]] && rm -f "$d"
+done
 ( umask 077; mkdir -p "$box_cfg" ) && chmod 700 "$box_home"
 
 opts=()
@@ -102,19 +109,39 @@ if [[ -z "$workdir" ]]; then
 fi
 workdir="$(cd "$workdir" 2>/dev/null && pwd -P || echo "$workdir")"
 
-# The box script lets the whole /exp/<exp>/app/users/$USER area through (its
-# depth check is one level short); that includes the harness config and keys.
+# The work directory is writable in the box, at its host path. Refuse one
+# that holds, or lies inside, a folder with your keys, the harness's own
+# programs or the box's staged secrets: the harness homes, the hep-genesis
+# install and data, and the box root (its work/ folder excepted). The box
+# script's own check only counts the depth of the path.
 if [[ "$workdir" == /exp/* ]] && [[ "$(awk -F/ '{print NF-1}' <<<"$workdir")" -lt 6 ]]; then
   echo "goosebox: refusing $workdir as the work directory: it holds your harness" >&2
   echo "  config and keys. Use a project directory below it (-C DIR)." >&2
   exit 1
 fi
+_users="/exp/${EXPERIMENT:-mu2e}"
+root_real="$(cd "$root" 2>/dev/null && pwd -P || echo "$root")"
+for p in "${CLAUDE_HOME:+$(dirname "$CLAUDE_HOME")}" "${GOOSE_ROOT:-}" \
+         "$_users/app/users/$USER/claude-code" "$_users/app/users/$USER/goose" \
+         "$_users/app/users/$USER/hep-genesis" "${HG_DATA_DIR:-$_users/data/users/$USER/hep-genesis-data}" \
+         "$root_real"; do
+  [[ -n "$p" && -d "$p" ]] || continue
+  p="$(cd "$p" 2>/dev/null && pwd -P)" || continue
+  [[ "$p" == "$root_real" && "$workdir/" == "$root_real/work/"* ]] && continue
+  if [[ "$workdir/" == "$p/"* || "$p/" == "$workdir/"* ]]; then
+    echo "goosebox: refusing $workdir as the work directory: it overlaps $p," >&2
+    echo "  which holds keys, settings or programs the box must not be able to change." >&2
+    echo "  Use a project directory elsewhere (-C DIR)." >&2
+    exit 1
+  fi
+done
 
 # Mu2e context plus a note on what this particular box sees, refreshed every
 # launch, in the box home (a copy: /exp is not mounted inside). goose's Top
 # Of Mind extension reads it from the path in GOOSE_MOIM_MESSAGE_FILE, which
 # is the path as seen inside the box.
 context="$box_cfg/mu2e-context.md"
+rm -f "$context"                         # replaced, never written through
 if {
   cat "$shared/mu2e.md" "$script_dir/../claudebox/box-note.md"
   echo
