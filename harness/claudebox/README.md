@@ -33,8 +33,8 @@ Mu2e MCP servers with their key, and the Mu2e context -- see
 `claudebox` is Ray's work. The script here is a copy of `/cvmfs/mu2e.opensciencegrid.org/bin/claudebox`
 (version 0.1, as published 2026-09-25), added unchanged so the harness and
 the sandbox can be reviewed, versioned and deployed together. The harness
-wrapper uses this copy and falls back to the CVMFS one; `$CLAUDEBOX_BIN`
-selects another.
+wrappers run `agentbox` (below), which is this script with a few changes;
+`$CLAUDEBOX_BIN` selects another, this copy or the CVMFS one included.
 
 ## Example: the same box for goose (`agentbox`, `goosebox`)
 
@@ -45,7 +45,8 @@ set, `goose_*`, next to them. Called as `goosebox` (a link to it) it runs
 Claude Code. The goose harness uses it for its `goosebox` command
 ([`../goose/goosebox.sh`](../goose/goosebox.sh) adds the Mu2e MCP servers,
 the Mu2e context and usage logging, as `claudebox.sh` does for Claude
-Code); the claude-code harness keeps using `claudebox`.
+Code), and so does the claude-code harness for `claudebox`, where it shows
+its messages under that name.
 
 ```bash
 diff claudebox agentbox             # exactly what moved or was added

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Harness front end for claudebox (Claude Code in a locked-down apptainer
-# container; the script itself is ../claudebox/claudebox). env.sh defines a
+# container; the script itself is ../claudebox/agentbox, Ray's claudebox with
+# the changes described in ../claudebox/README.md). env.sh defines a
 # `claudebox` function that calls this, so with the harness loaded
 # `claudebox ...` gets the Mu2e defaults; running the claudebox script
 # directly bypasses them.
@@ -27,10 +28,17 @@ set -uo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 shared="$script_dir/../shared"
 
-# The claudebox script: the copy that comes with the harness, else the one
-# in the CVMFS bin directory. $CLAUDEBOX_BIN overrides both.
-cbx="${CLAUDEBOX_BIN:-$script_dir/../claudebox/claudebox}"
+# The box script: agentbox, which comes with the harness (Ray's claudebox
+# plus usage logging for agents too, a clean environment for agents, and a
+# host side kept apart from what a box session can write). Without it, the
+# claudebox next to it, else the one in the CVMFS bin directory.
+# $CLAUDEBOX_BIN overrides all three.
+cbx="${CLAUDEBOX_BIN:-$script_dir/../claudebox/agentbox}"
+[[ -x "$cbx" || -n "${CLAUDEBOX_BIN:-}" ]] || cbx="$script_dir/../claudebox/claudebox"
 [[ -x "$cbx" || -n "${CLAUDEBOX_BIN:-}" ]] || cbx=/cvmfs/mu2e.opensciencegrid.org/bin/claudebox
+# Messages and hints say "claudebox", the command you typed; and it is
+# Claude Code that runs, whatever the script is called.
+export AGENTBOX_PROG=claudebox AGENTBOX_TOOL=claude
 [[ -x "$cbx" ]] || { echo "claudebox: $cbx not found" >&2; exit 1; }
 
 # Backend settings (key, base URL, model mapping). env.sh keeps them out of

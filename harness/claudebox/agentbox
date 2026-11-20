@@ -30,7 +30,9 @@
 #
 set -uo pipefail
 
-PROG=${0##*/}
+# The name used in messages and hints. A front end that calls this script
+# under another command name (the harness's `claudebox`) says so here.
+PROG=${AGENTBOX_PROG:-${0##*/}}
 VERSION=0.1+agentbox-example
 
 # Which agent runs in the box. Everything that depends on it lives in the
