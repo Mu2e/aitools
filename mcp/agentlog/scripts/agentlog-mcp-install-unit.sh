@@ -9,6 +9,7 @@ Usage:
                                [--krb5-ccname <ccname>] [--host <bind-address>]
                                [--db-schema <schema>] [--write-role <role>]
                                [--env-file <path>] [--no-enable]
+                               [--no-krb5-check]
 
   agentlog-mcp-install-unit.sh --mikey-keys-file <path> --env-file <path>
                                [--port <port>] [...]
@@ -44,16 +45,29 @@ database connection (e.g. FILE:/tmp/krb5cc_18199_auto). Pass it whenever the
 renewed cache is NOT the default location for this account, which is the usual
 case when a cron/keytab job maintains it.
 
-This matters more than it looks. A `systemd --user` service gets a minimal
-environment and does NOT inherit KRB5CCNAME from your login shell, so it reads
-the DEFAULT cache. If a renewal job is faithfully refreshing some other cache,
-`klist` in your shell shows a perfectly valid ticket while the service reads a
-stale one and every database connection fails with "GSSAPI continuation error
-... Ticket expired". That has happened here with memory-mcp: the default cache
-sat expired for a week while a healthy renewed ticket lived in an _auto cache
-the service never saw. This script therefore validates the cache with
-`klist -s` at install time, which catches an expired or missing ticket before
-the unit is written rather than at the next restart.
+This matters more than it looks, and it has now bitten twice. A `systemd --user`
+service gets a minimal environment and does NOT inherit KRB5CCNAME from your
+login shell, so it reads the DEFAULT cache. If a renewal job is faithfully
+refreshing some other cache, `klist` in your shell shows a perfectly valid
+ticket while the service reads a stale or empty one and every database
+connection fails:
+
+  GSSAPI continuation error: No credentials were supplied ...
+  No Kerberos credentials available (default cache: FILE:/tmp/krb5cc_18199)
+
+memory-mcp hit it with an expired default cache while a healthy renewed ticket
+lived in /tmp/krb5cc_18199_auto; agentlog-mcp then hit the same thing on its
+first start, because this script's own check honored KRB5CCNAME and so
+validated the shell's cache rather than the service's.
+
+So the check now looks at what the SERVICE will read:
+  * with --krb5-ccname: that cache must hold a valid ticket, or this exits 2.
+  * without it: the DEFAULT cache is checked with KRB5CCNAME cleared. No valid
+    ticket there is an ERROR, not a warning -- a unit that cannot authenticate
+    is not worth writing. If your shell has a usable ticket elsewhere, the
+    error names the --krb5-ccname value to pass.
+  * --no-krb5-check skips all of it, for installing a unit before the ticket
+    exists. The service will fail every connection until one does.
 
 ExecStart is resolved from this script's own location (the same trick
 agentlog-mcp.sh uses to find its sibling), so no path needs hand-editing.
@@ -84,6 +98,7 @@ write_role=""
 env_file=""
 krb5_ccname=""
 do_enable=1
+do_krb5_check=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -98,6 +113,7 @@ while [[ $# -gt 0 ]]; do
     --write-role) write_role="$2"; shift 2 ;;
     --env-file) env_file="$2"; shift 2 ;;
     --no-enable) do_enable=0; shift ;;
+    --no-krb5-check) do_krb5_check=0; shift ;;
     --help|-h) usage ;;
     *) echo "ERROR: unknown argument: $1" >&2; usage ;;
   esac
@@ -149,7 +165,11 @@ fi
 # actually read, holding an unexpired ticket, is a hard requirement. Validate it
 # here: an expired ticket found now is a clear message, while the same thing
 # found at runtime is a wall of psycopg GSSAPI text in the journal.
-if [[ -n "$krb5_ccname" ]]; then
+if [[ $do_krb5_check -eq 0 ]]; then
+  echo "Kerberos: --no-krb5-check given; not validating any credential cache." >&2
+  echo "  The service will fail every database connection until a ticket exists" >&2
+  echo "  in ${krb5_ccname:-the default cache}." >&2
+elif [[ -n "$krb5_ccname" ]]; then
   if ! klist -s -c "$krb5_ccname" 2>/dev/null; then
     echo "ERROR: no valid Kerberos ticket in $krb5_ccname" >&2
     echo "  Either the cache does not exist, or its ticket has expired." >&2
@@ -159,26 +179,42 @@ if [[ -n "$krb5_ccname" ]]; then
   fi
   echo "Kerberos: valid ticket in $krb5_ccname"
 else
-  # No explicit cache: the service will read the DEFAULT one. Check whether that
-  # is actually viable, because this is the exact case that broke memory-mcp in
-  # production -- a renewal job kept a non-default cache fresh while the default
-  # went stale.
-  if klist -s 2>/dev/null; then
-    default_cc=$(klist 2>/dev/null | sed -n '1s/^Ticket cache: //p')
-    if [[ -n "${KRB5CCNAME:-}" ]]; then
-      echo "WARNING: no --krb5-ccname given." >&2
-      echo "  Your shell has KRB5CCNAME=$KRB5CCNAME, but a systemd --user service" >&2
-      echo "  does NOT inherit it -- the service will read the default cache," >&2
-      echo "  which may be a different (and staler) one than you just checked." >&2
-      echo "  Pass --krb5-ccname \"$KRB5CCNAME\" to pin the cache the service uses." >&2
-    else
-      echo "Kerberos: no --krb5-ccname given; service will use the default cache ($default_cc)"
+  # No explicit cache: the service will read the DEFAULT one. Check THAT cache,
+  # with KRB5CCNAME cleared -- `klist -s` honors KRB5CCNAME, so checking it with
+  # this shell's environment intact validates the cache the service will NOT be
+  # using. That bug is why this script's warning did not stop an agentlog-mcp
+  # install whose service then failed every connection with "No Kerberos
+  # credentials available (default cache: FILE:/tmp/krb5cc_18199)" while a
+  # perfectly good ticket sat in /tmp/krb5cc_18199_auto. Check what the service
+  # reads, not what you read.
+  if env -u KRB5CCNAME klist -s 2>/dev/null; then
+    default_cc=$(env -u KRB5CCNAME klist 2>/dev/null | sed -n '1s/^Ticket cache: //p')
+    echo "Kerberos: no --krb5-ccname given; service will use the default cache ($default_cc),"
+    echo "          which currently holds a valid ticket."
+    if [[ -n "${KRB5CCNAME:-}" && "${KRB5CCNAME#FILE:}" != "${default_cc#FILE:}" ]]; then
+      echo "WARNING: your shell uses a DIFFERENT cache (KRB5CCNAME=$KRB5CCNAME)." >&2
+      echo "  The service cannot see it. If that is the one a renewal job keeps" >&2
+      echo "  fresh, the default cache will go stale and every connection will" >&2
+      echo "  fail -- pass --krb5-ccname \"$KRB5CCNAME\" to pin the right one." >&2
     fi
   else
-    echo "WARNING: no --krb5-ccname given and the default Kerberos cache has no" >&2
-    echo "  valid ticket. agentlog-mcp will fail to reach the database at startup." >&2
-    echo "  If a renewal job maintains a non-default cache, pass its path:" >&2
-    echo "    --krb5-ccname FILE:/tmp/krb5cc_<uid>_auto" >&2
+    echo "ERROR: the default Kerberos cache has no valid ticket, and no" >&2
+    echo "  --krb5-ccname was given. The service reads the DEFAULT cache (it does" >&2
+    echo "  not inherit KRB5CCNAME from your shell), so every database connection" >&2
+    echo "  would fail with 'No Kerberos credentials available' -- while this" >&2
+    echo "  script reported success. Refusing to write a unit that cannot work." >&2
+    if [[ -n "${KRB5CCNAME:-}" ]]; then
+      echo "" >&2
+      echo "  Your shell has a usable ticket in a different cache. You almost" >&2
+      echo "  certainly want:" >&2
+      echo "    --krb5-ccname \"$KRB5CCNAME\"" >&2
+    else
+      echo "  If a renewal job maintains a non-default cache, pass its path:" >&2
+      echo "    --krb5-ccname /tmp/krb5cc_<uid>_auto" >&2
+    fi
+    echo "" >&2
+    echo "  To install the unit anyway (ticket arriving later): --no-krb5-check" >&2
+    exit 2
   fi
 fi
 
