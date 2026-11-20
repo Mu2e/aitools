@@ -163,6 +163,7 @@ _users="/exp/${EXPERIMENT:-mu2e}"
 root_real="$(cd "$root" 2>/dev/null && pwd -P || echo "$root")"
 for p in "${CLAUDE_HOME:+$(dirname "$CLAUDE_HOME")}" "${GOOSE_ROOT:-}" \
          "$_users/app/users/$USER/claude-code" "$_users/app/users/$USER/goose" \
+         "$_users/app/users/$USER/goosebox" "${GOOSEBOX_ROOT:-}" \
          "$_users/app/users/$USER/hep-genesis" "${HG_DATA_DIR:-$_users/data/users/$USER/hep-genesis-data}" \
          "$root_real"; do
   [[ -n "$p" && -d "$p" ]] || continue

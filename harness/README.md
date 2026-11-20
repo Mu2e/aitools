@@ -106,6 +106,7 @@ trouble):
 | `claude-code/log/usage.jsonl` | your session usage log |
 | `goose/` | goose binary, config, sessions, usage log |
 | `claudebox/` | home, runs and work dir of `claudebox` (Claude in a container) |
+| `goosebox/` | the same for `goosebox` (goose in a container) |
 | `hep-genesis/` | the hep-genesis install (releases, Python environment) |
 
 hep-genesis keeps your chats, settings and keys apart from its install, in

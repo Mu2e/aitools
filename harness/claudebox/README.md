@@ -54,6 +54,11 @@ diff claudebox agentbox             # exactly what moved or was added
 ./goosebox agent NAME -f task.txt   # goose run, detached; list/log/stop/clean as before
 ```
 
+Through the goose harness, goose's box has a root of its own
+(`/exp/mu2e/app/users/$USER/goosebox`), so that a goose session does not
+see what Claude sessions left in their box home, the copied login included.
+Calling `goosebox` directly uses `$CLAUDEBOX_ROOT` like `claudebox`.
+
 About two thirds of `claudebox` is not about Claude at all (sandbox root,
 apptainer arguments, binds, secrets, credential imports, agent lifecycle)
 and is untouched. What an agent has to supply is nine small functions and

@@ -27,6 +27,13 @@ shared="$script_dir/../shared"
 gbx="${GOOSEBOX_BIN:-$script_dir/../claudebox/goosebox}"
 [[ -x "$gbx" ]] || { echo "goosebox: $gbx not found" >&2; exit 1; }
 
+# goose's box has a root of its own, not claudebox's: the box home keeps
+# what a session leaves there (Claude's copied login among it), and one
+# tool's sessions should not be able to read the other's. $GOOSEBOX_ROOT, or
+# --root, selects another. Exported under the name the box script reads, and
+# before the subcommands that pass straight through (list, log, stop, ...).
+export CLAUDEBOX_ROOT="${GOOSEBOX_ROOT:-/exp/${EXPERIMENT:-mu2e}/app/users/$USER/goosebox}"
+
 sub="${1:-}"
 case "$sub" in
   run|agent|start|shell|sh) shift ;;
@@ -36,8 +43,8 @@ case "$sub" in
 esac
 [[ "$sub" == start ]] && sub=agent    # an alias: an agent's default work directory, not $PWD
 
-# Same root the box script will use: --root, $CLAUDEBOX_ROOT, else the /exp area.
-root="${CLAUDEBOX_ROOT:-/exp/${EXPERIMENT:-mu2e}/app/users/$USER/claudebox}"
+# Same root the box script will use: --root, else the one set above.
+root="$CLAUDEBOX_ROOT"
 prev=""
 for a in "$@"; do
   [[ "$prev" == "--root" ]] && root="$a"
@@ -123,6 +130,7 @@ _users="/exp/${EXPERIMENT:-mu2e}"
 root_real="$(cd "$root" 2>/dev/null && pwd -P || echo "$root")"
 for p in "${CLAUDE_HOME:+$(dirname "$CLAUDE_HOME")}" "${GOOSE_ROOT:-}" \
          "$_users/app/users/$USER/claude-code" "$_users/app/users/$USER/goose" \
+         "$_users/app/users/$USER/claudebox" \
          "$_users/app/users/$USER/hep-genesis" "${HG_DATA_DIR:-$_users/data/users/$USER/hep-genesis-data}" \
          "$root_real"; do
   [[ -n "$p" && -d "$p" ]] || continue

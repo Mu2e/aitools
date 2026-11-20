@@ -118,8 +118,8 @@ goosebox list | log nightly -f | stop nightly
 goosebox help
 ```
 
-The box has its own home (`/exp/mu2e/app/users/$USER/claudebox/`, shared
-with `claudebox`). Sessions and agent runs are added to the usage log when
+The box has its own home (`/exp/mu2e/app/users/$USER/goosebox/`;
+`$GOOSEBOX_ROOT` or `--root` for another), apart from `claudebox`'s. Sessions and agent runs are added to the usage log when
 they end.
 
 ### Optional: local tracing (OpenTelemetry → Jaeger)
