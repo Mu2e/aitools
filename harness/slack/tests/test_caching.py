@@ -12,6 +12,9 @@ from mu2e_slack.agent import CACHE_MARK, Conversation
 class Tools:
     schemas = [{"type": "function", "function": {"name": f"t{i}", "parameters": {}}} for i in range(3)]
 
+    async def retry_failed(self):
+        return []
+
 
 def _conv(model="azure/claude-sonnet-5-5", prompt_cache="auto"):
     cfg = NS(model=model, prompt_cache=prompt_cache, command_prefix="!", system_prompt="You help.",

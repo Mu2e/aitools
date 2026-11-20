@@ -98,6 +98,10 @@ def stdio_env(server: str) -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k.startswith(prefix)}
 
 
+# Seconds between attempts to reach servers that were down at startup.
+RETRY_INTERVAL = 60.0
+
+
 def _qualify(server: str, tool: str) -> str:
     """OpenAI tool names allow [a-zA-Z0-9_-]{1,64}; registry names and MCP tool
     names are both free-form, so sanitize and truncate."""
@@ -117,6 +121,8 @@ class ToolRegistry:
         self.servers: dict[str, Server] = {}
         self.tools: dict[str, Tool] = {}
         self.failed: dict[str, str] = {}
+        self._last_retry = 0.0
+        self._retry_lock = asyncio.Lock()
 
     # -- discovery ------------------------------------------------------------
 
@@ -152,6 +158,40 @@ class ToolRegistry:
             "Loaded %d tools from %d/%d MCP servers",
             len(self.tools), len(self.servers) - len(self.failed), len(self.servers),
         )
+
+    async def retry_failed(self, min_interval: float = RETRY_INTERVAL) -> list[str]:
+        """List tools again on the servers that were down at load().
+
+        load() runs once, at startup. After a reboot every unit starts at
+        once, and a server that is slow to come up (kb-mcp warms up models and
+        a DB pool) is still refusing connections when the bot asks -- without
+        this it stays out of the tool list until the bot is restarted. Called
+        at the start of each turn; at most one attempt per ``min_interval``
+        seconds, and concurrent turns do not pile up behind it. Returns the
+        names of the servers that are back.
+        """
+        if not self.failed or self._retry_lock.locked():
+            return []
+        if time.monotonic() - self._last_retry < min_interval:
+            return []
+        async with self._retry_lock:
+            self._last_retry = time.monotonic()
+            names = [n for n in self.failed if n in self.servers]
+            results = await asyncio.gather(
+                *(self._list_server_tools(self.servers[n]) for n in names),
+                return_exceptions=True,
+            )
+            back = []
+            for name, result in zip(names, results):
+                if isinstance(result, BaseException):
+                    self.failed[name] = describe(result)
+                    continue
+                for tool in result:
+                    self.tools[tool.qualified] = tool
+                del self.failed[name]
+                back.append(name)
+                log.info("MCP server %s available again: %d tools", name, len(result))
+            return back
 
     async def _fetch_registry(self) -> dict[str, Server]:
         async with aiohttp.ClientSession() as session:
