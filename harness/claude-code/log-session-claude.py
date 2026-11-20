@@ -181,7 +181,10 @@ def parse_session(jsonl_path: Path) -> dict:
         "llm_calls":          llm_calls,
         "tool_calls_total":   sum(tool_calls.values()),
         "tool_breakdown":     dict(tool_calls),
-        "input_tokens":       input_tok,
+        # The shared convention (usage_record.py): input_tokens is the whole
+        # prompt, cache reads and writes included. Anthropic's API, and so
+        # the transcript, counts the uncached part only.
+        "input_tokens":       input_tok + cache_read + cache_write,
         "output_tokens":      output_tok,
         "cache_read_tokens":  cache_read,
         "cache_write_tokens": cache_write,

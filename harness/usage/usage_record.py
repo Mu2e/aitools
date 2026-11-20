@@ -5,6 +5,13 @@ this file) column for column -- the same shape the Slack bot writes
 (harness/slack/src/mu2e_slack/usage_log.py), so all three interfaces land
 in one dataset. ``interface`` tells them apart.
 
+Token columns mean the same for every interface: ``input_tokens`` is the
+whole prompt, with the part read from a cache (``cache_read_tokens``) and
+the part written to one (``cache_write_tokens``) inside it, as OpenAI-style
+APIs report ``prompt_tokens``; ``output_tokens`` has ``thinking_tokens``
+inside it. A logger whose source counts differently (Anthropic's API gives
+the uncached input alone) adds them up before it calls make_record.
+
 Nothing that identifies a person is recorded: no user, no session name, no
 working directory, no content. ``session_id`` is "<interface>-" plus a hash
 of the tool's own session id, so a session's turns stay one row without
