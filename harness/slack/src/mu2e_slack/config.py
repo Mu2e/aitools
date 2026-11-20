@@ -94,6 +94,11 @@ class Config:
     dm_enabled: bool = True
     command_prefix: str = "!"
     tool_notifications: bool = True
+    # Images a tool returns (kb_get_image) are uploaded to the thread
+    # (needs files:write) and shown to the model as image blocks when it takes
+    # them; a model that rejects images falls back to text for the thread.
+    post_images: bool = True
+    vision_tool_images: bool = True
     # Conversations idle longer than this are dropped from memory (their usage
     # record is already on disk).
     idle_timeout: int = 4 * 3600
@@ -190,6 +195,10 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, argparse.Namespac
                         "without a mention are accepted; 0 = no limit (default: %(default)s)")
     p.add_argument("--command-prefix", default=os.environ.get("MU2E_SLACK_COMMAND_PREFIX", "!"),
                    help="Prefix for in-thread commands like !help (default: %(default)s)")
+    p.add_argument("--no-post-images", action="store_true",
+                   help="Do not upload images that tools return to the thread (env MU2E_SLACK_POST_IMAGES=0)")
+    p.add_argument("--no-vision", action="store_true",
+                   help="Do not show tool images to the model (env MU2E_SLACK_VISION=0)")
     p.add_argument("--no-tool-notifications", action="store_true",
                    help="Do not post a line in the thread when the agent calls a tool.")
     p.add_argument("--idle-timeout", type=int, default=int(os.environ.get("MU2E_SLACK_IDLE_TIMEOUT", 4 * 3600)),
@@ -240,6 +249,8 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, argparse.Namespac
         dm_enabled=not args.no_dm and _env_flag("MU2E_SLACK_DM", True),
         command_prefix=args.command_prefix,
         tool_notifications=not args.no_tool_notifications,
+        post_images=not args.no_post_images and _env_flag("MU2E_SLACK_POST_IMAGES", True),
+        vision_tool_images=not args.no_vision and _env_flag("MU2E_SLACK_VISION", True),
         idle_timeout=args.idle_timeout,
         rate_user=args.rate_user,
         rate_total=args.rate_total,

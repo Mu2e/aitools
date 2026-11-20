@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from .mcp_tools import ToolRegistry
+from .mcp_tools import ToolImage, ToolRegistry
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +33,43 @@ COMPACT_TRIGGER = 0.8  # fraction of the context budget that forces a compaction
 # system prompt changes per request (the time of day rides on each user
 # message instead). Reads cost ~0.1x input, writes ~1.25x.
 CACHE_MARK = {"type": "ephemeral"}
+
+# Images shown to the model per turn, and the largest one it gets: hosted vision
+# APIs refuse payloads over ~5 MB, and every image stays in the thread's history
+# (sent again with each later request). Slack gets all of them regardless.
+# The bot's own tool for putting an image in front of the user. Images the
+# tools return go to the model; only those it names here reach the thread, and
+# only names from this turn's tool results are accepted.
+SHOW_IMAGE_TOOL = "slack__show_image"
+SHOW_IMAGE_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": SHOW_IMAGE_TOOL,
+        "description": (
+            "Show images to the user: posts them to the Slack thread after your answer. Only images "
+            "a tool returned in this turn (e.g. kb_get_image), by the file name given in its result. "
+            "Use it when the user asked to see an image or it clearly helps the answer; images you "
+            "only looked at yourself need not be shown."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"names": {"type": "array", "items": {"type": "string"},
+                                     "description": "File names of the images to show"}},
+            "required": ["names"],
+        },
+    },
+}
+
+# How long an image stays in the model's context (and can still be shown):
+# through this many further user turns, and never past an idle gap longer
+# than the prompt cache lives -- after that resending it costs full price and
+# a follow-up about it is unlikely. Then it becomes a note naming the file.
+IMAGE_KEEP_TURNS = 2
+IMAGE_IDLE_SECONDS = 300
+
+MAX_VISION_IMAGES = 4
+MAX_VISION_BYTES = 3_500_000
+_NO_VISION_NOTE = "[image not shown to the model: it does not accept images; the user sees it in the thread]"
 
 COMPACT_INSTRUCTION = (
     "Summarize the conversation so far for your own future reference. Keep the "
@@ -74,6 +111,17 @@ class Conversation:
         self.updated_at = self.created_at
         self.last_prompt_tokens = 0
         self.tool_notifications = cfg.tool_notifications
+        # Images the tools returned in the current turn; the Slack side posts them.
+        self.turn_images: list[ToolImage] = []
+        # The ones the model chose to show the user (SHOW_IMAGE_TOOL).
+        self.turn_shown: list[ToolImage] = []
+        # Images still in the model's context, by name, with the turn they came
+        # from: what the model can still see, it can still show.
+        self.recent_images: dict[str, tuple[int, ToolImage]] = {}
+        self.can_show_images = bool(getattr(cfg, "post_images", True))
+        # Show them to the model too (vision); turned off for the thread when
+        # its model rejects an image block, so a text-only model keeps working.
+        self.vision = bool(getattr(cfg, "vision_tool_images", True))
         self.lock = asyncio.Lock()
         self.last_active = time.monotonic()
 
@@ -98,7 +146,9 @@ class Conversation:
 
     async def ask(self, text: str, on_tool=None) -> str:
         """Run one user turn to completion and return the reply text."""
+        idle = time.monotonic() - self.last_active
         self.usage.turns += 1
+        self._expire_images(idle)
         # A server that was down when the bot started may be up by now.
         await self.tools.retry_failed()
         now = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
@@ -107,6 +157,8 @@ class Conversation:
         # Reset per turn, not per conversation: asking the same question again
         # later is legitimate, repeating a call inside one turn is not.
         attempted: set[str] = set()
+        self.turn_images = []
+        self.turn_shown = []
 
         for _ in range(self.cfg.max_tool_iterations):
             message = await self._complete()
@@ -116,8 +168,12 @@ class Conversation:
                 await self._maybe_compact()
                 return message.get("content") or "(no answer)"
 
+            new_images: list[ToolImage] = []
             for call in tool_calls:
-                await self._run_tool(call, on_tool, attempted)
+                await self._run_tool(call, on_tool, attempted, new_images)
+            # After all the tool results: the API wants every tool answer to
+            # follow its call directly, and tool messages can only carry text.
+            self._show_images(new_images)
 
         # Ran out of tool budget. Everything gathered so far is still in
         # self.messages, so a follow-up question can continue from here.
@@ -134,29 +190,121 @@ class Conversation:
             return "claude" in self.model.lower()
         return mode == "on"
 
-    def _request(self) -> tuple[list[dict], list[dict]]:
-        """Messages and tools for one model call, with cache markers when
-        caching is on. Marks go on copies: self.messages stays plain, so the
-        history is the same whichever model reads it next."""
-        system = self._system_prompt()
-        messages = [system] + self.messages
-        schemas = self.tools.schemas
-        if not self._caching():
-            return messages, schemas
-        if schemas:
-            schemas = schemas[:-1] + [{**schemas[-1], "cache_control": CACHE_MARK}]
-        messages = [_marked(system)] + self.messages[:-1] + [_marked(self.messages[-1])]
-        return messages, schemas
-
-    async def _complete(self) -> dict:
+    async def _create(self):
         messages, schemas = self._request()
-        response = await self.client.chat.completions.create(
+        return await self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             tools=schemas or None,
             temperature=self.cfg.temperature,
             max_tokens=self.cfg.max_tokens,
         )
+
+    def _request(self) -> tuple[list[dict], list[dict]]:
+        """Messages and tools for one model call, with cache markers when
+        caching is on. Marks go on copies: self.messages stays plain, so the
+        history is the same whichever model reads it next."""
+        system = self._system_prompt()
+        plain = self._plain_messages()
+        messages = [system] + plain
+        schemas = self.tools.schemas
+        if self.can_show_images:
+            schemas = list(schemas) + [SHOW_IMAGE_SCHEMA]
+        if not self._caching():
+            return messages, schemas
+        if schemas:
+            schemas = schemas[:-1] + [{**schemas[-1], "cache_control": CACHE_MARK}]
+        messages = [_marked(system)] + plain[:-1] + [_marked(plain[-1])]
+        return messages, schemas
+
+    def _show(self, arguments: dict) -> str:
+        """SHOW_IMAGE_TOOL: mark images from this turn's tool results for the thread."""
+        names = arguments.get("names")
+        if isinstance(names, str):
+            names = [names]
+        if not isinstance(names, list) or not names:
+            return "Error: give the file names of the images to show, as names=[...]."
+        available = {name: image for name, (_, image) in self.recent_images.items()}
+        if not available:
+            return ("No image from a tool is in this conversation any more, so there is nothing to show. "
+                    "Fetch it again (e.g. kb_get_image) to show it.")
+        shown, unknown = [], []
+        for n in names:
+            image = available.get(str(n).strip().rsplit("/", 1)[-1])
+            if image is None:
+                unknown.append(str(n))
+            elif image not in self.turn_shown:
+                self.turn_shown.append(image)
+                shown.append(image.name)
+        parts = []
+        if shown:
+            parts.append(f"Will be posted to the thread after your answer: {', '.join(shown)}.")
+        if unknown:
+            parts.append(f"Not among the images the tools returned recently, not shown: {', '.join(unknown)}. "
+                         f"Available: {', '.join(available)}.")
+        return " ".join(parts) or "Already marked to be shown."
+
+    def _show_images(self, images: "list[ToolImage]") -> None:
+        """Give a vision model the images the last tool calls returned."""
+        if not (self.vision and images):
+            return
+        shown = [i for i in images if len(i.data) <= MAX_VISION_BYTES][:MAX_VISION_IMAGES]
+        if not shown:
+            return
+        names = ", ".join(i.name for i in shown)
+        blocks: list[dict] = [{"type": "text", "text": f"The images the tool returned ({names}):"}]
+        blocks += [{"type": "image_url", "image_url": {"url": i.data_url}} for i in shown]
+        self.messages.append({"role": "user", "content": blocks, "tool_images": self.usage.turns,
+                              "image_names": [i.name for i in shown]})
+
+    def _expire_images(self, idle_seconds: float) -> None:
+        """Take images out of the context once they are IMAGE_KEEP_TURNS turns
+        old, or all of them after an idle gap longer than IMAGE_IDLE_SECONDS."""
+        now = self.usage.turns
+        cold = idle_seconds > IMAGE_IDLE_SECONDS
+        for i, m in enumerate(self.messages):
+            if "tool_images" in m and (cold or now - m["tool_images"] > IMAGE_KEEP_TURNS):
+                names = ", ".join(m.get("image_names") or []) or "an image"
+                self.messages[i] = {"role": "user", "content": (
+                    f"[image {names} was shown here; fetch it again (e.g. kb_get_image) to look at "
+                    f"or show it]")}
+        self.recent_images = {n: (t, img) for n, (t, img) in self.recent_images.items()
+                              if not cold and now - t <= IMAGE_KEEP_TURNS}
+
+    def _plain_messages(self, without_images: bool = False) -> list[dict]:
+        """The history as the API takes it: without our "tool_images" marker,
+        and with the image blocks replaced by a note when ``without_images``."""
+        out = []
+        for m in self.messages:
+            if "tool_images" not in m:
+                out.append(m)
+            elif without_images:
+                out.append({"role": "user", "content": "[images were shown here]"})
+            else:
+                out.append({k: v for k, v in m.items() if k not in ("tool_images", "image_names")})
+        return out
+
+    def _drop_images(self) -> bool:
+        """Replace the image blocks in the history by a note; True if any were there."""
+        dropped = False
+        for i, m in enumerate(self.messages):
+            if m.get("tool_images"):
+                self.messages[i] = {"role": "user", "content": _NO_VISION_NOTE}
+                dropped = True
+        return dropped
+
+    async def _complete(self) -> dict:
+        try:
+            response = await self._create()
+        except Exception as exc:
+            # A text-only model (gpt-oss on vLLM) rejects image blocks with a
+            # 400. Drop them, keep the thread going without vision.
+            if not (_is_bad_request(exc) and self._drop_images()):
+                raise
+            log.warning("model %s rejected an image (%s); continuing without vision in %s",
+                        self.model, str(exc)[:120], self.key)
+            self.vision = False
+            response = await self._create()
         self._account(response)
 
         choice = response.choices[0].message
@@ -178,7 +326,8 @@ class Conversation:
         self.last_active = time.monotonic()
         return message
 
-    async def _run_tool(self, call: dict, on_tool, attempted: set[str]) -> None:
+    async def _run_tool(self, call: dict, on_tool, attempted: set[str],
+                        images: "list[ToolImage] | None" = None) -> None:
         name = call["function"]["name"]
         raw_args = call["function"]["arguments"] or "{}"
         try:
@@ -206,7 +355,19 @@ class Conversation:
             self.usage.tool_breakdown[name] = self.usage.tool_breakdown.get(name, 0) + 1
             if on_tool is not None:
                 await on_tool(name, arguments)
-            result = await self.tools.call(name, arguments)
+            if name == SHOW_IMAGE_TOOL:
+                result = self._show(arguments)
+            else:
+                found: list[ToolImage] = []
+                result = await self.tools.call(name, arguments, images=found)
+                self.turn_images.extend(found)
+                for image in found:
+                    self.recent_images[image.name] = (self.usage.turns, image)
+                if images is not None:
+                    images.extend(found)
+                if found and self.can_show_images:
+                    result += (f"\n(To show {'it' if len(found) == 1 else 'them'} to the user, call "
+                               f"{SHOW_IMAGE_TOOL} with the file name; otherwise only you see it.)")
 
         self.messages.append({
             "role": "tool",
@@ -249,7 +410,8 @@ class Conversation:
 
         response = await self.client.chat.completions.create(
             model=self.model,
-            messages=[self._system_prompt()] + self.messages + [
+            # A summary needs no pixels.
+            messages=[self._system_prompt()] + self._plain_messages(without_images=True) + [
                 {"role": "user", "content": COMPACT_INSTRUCTION}
             ],
             temperature=0.0,
@@ -258,6 +420,7 @@ class Conversation:
         self._account(response)
         summary = response.choices[0].message.content or ""
 
+        self.recent_images = {}  # the summary carries no images
         self.messages = [
             {"role": "user", "content": f"Notes from earlier in this thread:\n\n{summary}"},
             {"role": "assistant", "content": "Noted -- carrying on from there."},
@@ -266,6 +429,7 @@ class Conversation:
 
     def reset(self) -> None:
         self.messages = []
+        self.recent_images = {}
         self.last_prompt_tokens = 0
 
     # -- backend protocol (see backend.py) ------------------------------------
@@ -314,3 +478,8 @@ def _marked(message: dict) -> dict:
         return message
     blocks[-1] = {**blocks[-1], "cache_control": CACHE_MARK}
     return {**message, "content": blocks}
+
+
+def _is_bad_request(exc: BaseException) -> bool:
+    """An HTTP 400 from the model endpoint (openai.BadRequestError or alike)."""
+    return getattr(exc, "status_code", None) == 400 or type(exc).__name__ == "BadRequestError"
