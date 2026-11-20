@@ -55,6 +55,12 @@ if [ -f "$hg_release/usage/log-session.py" ]; then
     export HEP_TURN_HOOK="$hg_release/venv/bin/python $hg_release/usage/log-session.py"
 fi
 
+# The record also goes to the usage log service, which adds it to the shared
+# usage table (users cannot write there themselves). LOG_URL= (empty), here
+# or in the .env, keeps your records in the local file only. The service
+# account writes to the database directly (LOG_PG_DSN) and does not use this.
+export LOG_URL="${LOG_URL-http://mu2eaigpvm01.fnal.gov:8199/usage}"
+
 hg_status=0
 if [ -x "$hg_release/bin/hep-genesis-agent" ]; then
     case ":$PATH:" in

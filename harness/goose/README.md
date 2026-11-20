@@ -75,6 +75,9 @@ session, updated live). Records have the columns of the shared table
 `usage.sessions` (`../usage/sessions.sql`), the same shape the Slack bot and
 the claude-code harness write: counts, timings, model and tool names only --
 no user, session name, working directory or content.
+The record is also sent to the [usage log service](../usage/server/README.md),
+which adds it to the shared table; `LOG_URL=` (empty) before sourcing
+`env.sh` keeps it local.
 
 ### Guard rails
 

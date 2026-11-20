@@ -37,6 +37,11 @@ found:
 | The install | `/exp/mu2e/app/users/$USER/hep-genesis` | `HEP_GENESIS_ROOT` |
 | Your chats, settings, keys | `/exp/mu2e/data/users/$USER/hep-genesis-data` (mode 700) | `HG_DATA_DIR` |
 
+**Usage log.** Counts, model and tool names per chat (no user, no content)
+go to `log/usage.jsonl` in your data folder and to the
+[usage log service](../usage/server/README.md); `LOG_URL=` (empty) in your
+`.env` keeps them local.
+
 **What the install needs.** The code is in the private repository
 Mu2e/hep-genesis-agent, readable by every member of the Mu2e GitHub
 organization, so git has to know who you are on GitHub: an ssh key

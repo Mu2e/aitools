@@ -129,7 +129,9 @@ journalctl --user -u hep-genesis-web -n 20 -o cat
 
 Every chat's usage (model, model calls, tokens, tool names; no user, no
 content) is written to `<data folder>/log/usage.jsonl` in the shared
-`usage.sessions` format, as in the other harnesses. The service account also
+`usage.sessions` format, as in the other harnesses, and sent to the
+[usage log service](../usage/server/README.md) (`LOG_URL`, set by `env.sh`;
+empty switches it off). The service account also
 sends it to Postgres, with these two lines in `$D/.env`:
 
 ```bash

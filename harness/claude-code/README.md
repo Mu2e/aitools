@@ -131,6 +131,9 @@ Records have the columns of the shared table `usage.sessions`
 timings, model and tool names only -- no user, directory or content.
 `provider` says which backend the session ran on: `litellm`, `anthropic` (a
 personal API key) or `claude.ai` (a subscription login).
+The record is also sent to the [usage log service](../usage/server/README.md),
+which adds it to the shared table; `LOG_URL=` (empty) before sourcing
+`env.sh` keeps it local.
 
 ## Sandboxed: claudebox
 
