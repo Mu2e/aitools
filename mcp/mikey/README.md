@@ -101,6 +101,32 @@ new CLI flag -- the env var itself is the on/off switch.
 (there's no real OAuth authorization server behind mikey) and default to
 `http://localhost/` if unset.
 
+### `validate_token_resource=False` — load-bearing, don't remove it
+
+`build_auth_kwargs()` passes `validate_token_resource=False` into
+`AuthSettings`, and that line is what keeps every mikey-authenticated
+server working when the SDK's default flips.
+
+A mikey token is a static shared secret with no RFC 8707 resource
+indicator, so `MikeyTokenVerifier` returns an `AccessToken` whose
+`resource` is unset. The SDK's check
+(`BearerAuthBackend._issued_for_this_resource`) does
+`AnyHttpUrl(resource or "")` and treats the `ValidationError` as a
+mismatch — so a token with no resource **fails** it and the request gets a
+401. That check runs whenever `resource_server_url` is set and
+`validate_token_resource` is true.
+
+Since mikey always sets `resource_server_url`, leaving the flag unset earns
+an `MCPDeprecationWarning` on every startup today and becomes `True` in
+SDK 3.0 — at which point every server using these kwargs would reject
+every valid key. Declaring `False` pins current behavior through that
+change.
+
+Older SDKs (`mcp` 2.0.0) have no such field; pydantic ignores the extra
+kwarg, so passing it is safe for a server pinned to one. If mikey ever
+issues per-resource tokens, set the `AccessToken`'s `resource` in
+`verify_token` first, then flip this to `True`.
+
 Clients then authenticate with:
 
 ```bash
