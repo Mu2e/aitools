@@ -34,11 +34,11 @@ CREATE TABLE IF NOT EXISTS usage.sessions (
     llm_calls           INTEGER,
     tool_calls          INTEGER,
     tool_breakdown      JSONB,                  -- {"kb__kb_search": 2, ...}
-    input_tokens        BIGINT,
+    input_tokens        BIGINT,                 -- the whole prompt: includes cache_read and cache_write
     output_tokens       BIGINT,
     cache_read_tokens   BIGINT,
     cache_write_tokens  BIGINT,
-    thinking_tokens     BIGINT,
+    thinking_tokens     BIGINT,                 -- part of output_tokens
     PRIMARY KEY (session_id, logged_at)
 );
 

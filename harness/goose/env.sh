@@ -140,6 +140,12 @@ mu2eai-model() {
   goose-model "$@"
 }
 
+# Usage records (counts, model and tool names; no user, no content) also go
+# to the usage log service, which adds them to the shared usage table: users
+# cannot write there themselves. Set LOG_URL= (empty) before sourcing this
+# file to keep your records in the local usage.jsonl only.
+export LOG_URL="${LOG_URL-http://mu2eaigpvm01.fnal.gov:8199/usage}"
+
 # Sandboxed goose: goosebox (goose in an apptainer container, the agentbox
 # example in ../claudebox), through goosebox.sh, which adds the Mu2e MCP
 # servers, the Mu2e context and usage logging -- as the claudebox function

@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+# Version from the nearest git tag (setuptools_scm), as for the MCP servers:
+# see mcp/registry/pyproject.toml.
+[tool.setuptools_scm]
+root = "../../.."
+
+[project]
+name = "mu2e-usage-server"
+dynamic = ["version"]
+description = "HTTP service that takes the Mu2e AI harnesses' usage records (mikey-authenticated) and inserts them into usage.sessions"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "starlette>=0.37",
+  "uvicorn>=0.30",
+  "mikey @ git+https://github.com/Mu2e/aitools#subdirectory=mcp/mikey",
+  "psycopg[binary]>=3.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "httpx"]
+
+[project.scripts]
+usage-server = "usage_server.app:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+script-files = ["scripts/usage-server-install-unit.sh"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
