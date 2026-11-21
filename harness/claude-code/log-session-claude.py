@@ -199,8 +199,11 @@ def parse_session(jsonl_path: Path) -> dict:
         for u in msg_usage.values())
     whole = lambda t: t["input"] + t["cache_read"] + t["cache_write"]  # noqa: E731
     best = by_state if whole(by_state) > whole(by_message) else by_message
-    input_tok, output_tok = best["input"], best["output"]
-    cache_read, cache_write, think_tok = best["cache_read"], best["cache_write"], best["thinking"]
+    # The prompt counts belong together and come from one source; output and
+    # thinking are each the larger of the two.
+    input_tok, cache_read, cache_write = best["input"], best["cache_read"], best["cache_write"]
+    output_tok = max(by_state["output"], by_message["output"])
+    think_tok = max(by_state["thinking"], by_message["thinking"])
     # cost_usd intentionally not logged (privacy / not needed)
     # The record has one model: the one most of the prompt tokens went to
     # (a session can switch models, and subagents may use another).

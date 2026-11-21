@@ -160,7 +160,8 @@ def write_jsonl(record: dict, path: Path) -> None:
 # ------------------------------------------------------- the usage log service
 
 BACKLOG_MAX = 2000        # records kept while the service cannot be reached
-SEND_BATCH = 400          # the service takes up to 500 at once
+SEND_BATCH = 400          # the service takes up to 500 at once,
+SEND_BYTES = 900_000      # and up to 1 MB
 RETRY_AFTER = 300         # seconds without a new attempt after a failed one
 LOCK_WAIT = 6.0           # seconds a logger waits for another one to finish
 
@@ -236,22 +237,22 @@ def send(record: dict, backlog: Path, timeout: float = 3.0, retry_after: float =
     # One logger at a time reads, sends and clears the backlog: a harness can
     # run two within a moment (end of turn, end of session), and without this
     # one could delete a record the other had just put there.
-    lock = None
+    lock, held = None, False
     try:
         backlog.parent.mkdir(parents=True, exist_ok=True)
         lock = open(backlog.with_name("." + backlog.name + ".lock"), "a")
         deadline = time.time() + LOCK_WAIT
-        while True:
+        while not held and time.time() <= deadline:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
+                held = True
             except OSError:
-                if time.time() > deadline:
-                    break             # the other one is stuck: go on rather than lose the record
                 time.sleep(0.05)
     except OSError:
         pass
     try:
+        if not held:
+            return False              # the other one is stuck: not sent (it is in the local usage log)
         return _send_locked(record, backlog, url, timeout, retry_after, debug)
     finally:
         if lock is not None:
@@ -260,21 +261,39 @@ def send(record: dict, backlog: Path, timeout: float = 3.0, retry_after: float =
 
 def _send_locked(record: dict, backlog: Path, url: str, timeout: float, retry_after: float, debug: bool) -> bool:
     records = _read_lines(backlog) + [record]
+    # The time of the last failed attempt is this file's; the backlog's own
+    # time moves with every record added, and would keep the pause going.
+    failed = backlog.with_name("." + backlog.name + ".failed")
+    tried = False
     try:
-        if len(records) > 1 and time.time() - backlog.stat().st_mtime < retry_after:
+        try:
+            paused = time.time() - failed.stat().st_mtime < retry_after
+        except OSError:
+            paused = False
+        if paused:
             raise RuntimeError(f"not tried: the last attempt failed less than {int(retry_after)} s ago")
+        tried = True
         token = mikey_token()
         if not token:
             raise RuntimeError("no Mu2e key (MIKEY_TOKEN, mikey_token file, getMu2eKey)")
-        for i in range(0, len(records), SEND_BATCH):
-            answer = _post(url, token, records[i:i + SEND_BATCH], timeout)
+        batches, size = [[]], 0
+        for r in records:
+            n = len(json.dumps(r, default=str)) + 2
+            if batches[-1] and (len(batches[-1]) >= SEND_BATCH or size + n > SEND_BYTES):
+                batches.append([])
+                size = 0
+            batches[-1].append(r)
+            size += n
+        for batch in batches:
+            answer = _post(url, token, batch, timeout)
             for bad in answer.get("rejected") or []:
                 # The service will never take these: not kept, or they would wait for good.
                 print(f"usage log: a record was not accepted: {bad.get('error')}", file=sys.stderr)
-        try:
-            backlog.unlink()
-        except OSError:
-            pass
+        for done in (backlog, failed):
+            try:
+                done.unlink()
+            except OSError:
+                pass
         return True
     except Exception as exc:  # noqa: BLE001 - service down, no key, a timeout: it waits
         if debug:
@@ -287,6 +306,8 @@ def _send_locked(record: dict, backlog: Path, url: str, timeout: float, retry_af
             with os.fdopen(fd, "w") as fh:
                 fh.writelines(lines)
             tmp.replace(backlog)
+            if tried:
+                failed.touch()
         except OSError:
             pass
         return False

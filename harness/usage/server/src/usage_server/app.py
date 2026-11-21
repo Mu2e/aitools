@@ -133,7 +133,8 @@ def clean(record: Any, allowed: set[str]) -> dict:
         value = record.get(name)
         if value is None:
             continue
-        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < MAX_COUNT:
+        top = 2**31 if name in ("turns", "llm_calls", "tool_calls") else MAX_COUNT  # INTEGER columns
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < top:
             raise ValueError(f"{name}: not a count")
         out[name] = value
     tools = record.get("tool_breakdown")
