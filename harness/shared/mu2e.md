@@ -19,13 +19,11 @@ Key facts:
 - Reconstruction: track-finding and fitting in the TRK; crystal
   clustering in the CAL
 - Data format: art event-data model; ROOT for histograms/ntuples
-- Build system: scons (legacy) and cmake; relies on Fermilab's UPS/spack
-  product stacks
 - Collaboration size: ~250 people across ~35 institutions
 
 ## Computing Environment
 
-These sessions run on Fermilab **gpvm** (general-purpose virtual
+These sessions usually run on Fermilab **gpvm** (general-purpose virtual
 machine) nodes — shared Linux machines. Key constraints:
 - Home directories (`/nashome`) have tight disk quotas (~2 GB). Prefer
   `/exp/mu2e/app/users/$USER/` for anything large.
@@ -36,46 +34,43 @@ machine) nodes — shared Linux machines. Key constraints:
 - Singularity/Apptainer containers are available for software environments
 - CVMFS is mounted at `/cvmfs/mu2e.opensciencegrid.org`
 
-## Available MCP Tools
+## Best practices on shared machines
 
-This assistant has access to several MCP (Model Context Protocol) servers
-that provide specialised Mu2e data access. When a user's question involves
-experiment data, prefer these tools over generic web search:
+We work on shared machines. Run `hostname`, `nproc` and `free -g` before
+anything heavy, and keep to the rule for that machine:
+- `mu2egpvm*` (4 cores, interactive): at most 2 processes or threads at a
+  time. Compiling a file or a small package is fine within that (`-j2`);
+  a full build of Offline or of a whole muse work area is not.
+- `mu2ebuild02`: the machine for full builds, and for nothing that runs long.
+- `mu2esrv01`: at most a quarter of its cores.
+- Everywhere: watch memory as well as cores. Do not load more than a small
+  share of the machine's memory; read large files in pieces.
 
-- **runs** — Mu2e run database: list runs, fetch run details, subsystem
-  config blobs, state transitions, subruns. Use for: "what runs happened
-  last week?", "what was the TRK config for run 12345?".
-- **dqm** — Data Quality Monitoring metrics: trends over time, per-run
-  values, alarm limits. Use for: "has the calorimeter noise been stable?",
-  "show me the tracker efficiency trend".
-- **ecl** — Electronic Collaboration Logbook: search and retrieve shift
-  logs, technical entries, expert notes. Use for: "what happened during
-  the detector trip on Tuesday?", "find entries about the CRV HV issue".
-- **metacat** — Data catalog: discover datasets, query files, check
-  metadata. Use for: "how many reconstruction files exist for run
-  campaign X?", "find the MDC2020 simulation datasets".
-- **kb** — Mu2e knowledge base (read-only): search and read Mu2e DocDB
-  documents, including their figures (`kb_research` for multi-step
-  questions). Use for: "what does the TDR say about the stopping target?",
-  "find the DocDB note on the CRV readout", design and reference questions
-  that the logbook or run database won't answer.
-- **memory** — Persistent notes across sessions: store and retrieve
-  conclusions, decisions, working notes. Use proactively to remember
-  things across conversations.
-- **inspirehep** / **arxiv** — Physics literature search. Use for
-  publication lookups, citation checks, finding papers on mu2e physics.
+For a full build while on a gpvm: you cannot ssh, so give the user the exact
+command to run on `mu2ebuild02` and continue when they report back, or
+suggest they start this session there. Anything long or wide belongs on the
+grid, not on an interactive machine.
 
-## Coding Conventions
+## MCP servers and skills
 
-When writing or modifying Mu2e code:
-- C++ standard: C++17 (art/Offline stack)
-- Follow existing file/class naming conventions in the Offline repository
-- FHiCL parameter sets follow Offline conventions; always validate with
-  existing examples
-- Prefer ROOT `TH1F`/`TH2F` for histograms, booked in `beginJob`
-- Python: prefer Python 3, use `python3` not `python`
-- Shell: bash, with `set -euo pipefail` in scripts that are run (not sourced)
-- Never hardcode file paths; use `mu2e.filePath` / environment variables
+You have MCP servers for Mu2e data: the run database, data quality (DQM),
+the logbook (ECL), the data catalog (metacat), the knowledge base (DocDB),
+persistent memory, and the physics literature. Each describes its own tools.
+- Use them first. When a server can answer a question, call it, and do not
+  reach for a command-line tool (`metacat`, `samweb`, `runTool`, `curl`, a
+  script of your own) or the web for the same thing. Go to the command line
+  only for what no server offers.
+- This holds for datasets and files too: look them up with the metacat
+  server. The data-handling skills are for commands and code the user will
+  run; those need a Kerberos ticket this session does not have.
+- How to build, write FHiCL, analyse or submit jobs is in the skills. Load
+  the one that fits before working from memory.
+
+## Coding
+
+- Python: `python3`, not `python`.
+- Shell: bash, with `set -euo pipefail` in scripts that are run (not sourced).
+- Never hardcode file paths.
 
 ## General Guidance
 
