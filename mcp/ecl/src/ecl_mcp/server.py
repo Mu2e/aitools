@@ -108,6 +108,17 @@ def _get_ecl() -> ECL:
         return _ecl_instance
 
 
+def _with_url(entry: Any) -> Any:
+    """Add ``url``, the entry's page in the logbook's web interface, so a
+    caller can point a reader at the entry instead of quoting its number.
+    The address is the one the client talks to (ECL_URL, resolved to the
+    active server), so it is right for this deployment's logbook."""
+    base = getattr(_get_ecl(), "_url", None)
+    if base and isinstance(entry, dict) and entry.get("id") is not None and "url" not in entry:
+        entry["url"] = f"{str(base).rstrip('/')}/show?e={entry['id']}"
+    return entry
+
+
 def _wrap(fn):
     """Convert exceptions raised inside a tool into a readable ToolError.
 
@@ -182,10 +193,11 @@ def search_entries(
         limit: max number of entries to return (default 50)
 
     Returns a list of entry dicts. Each dict has at least: id (int), author,
-    subject, category, timestamp, form, tags (list[str]), text, and may have
-    fields (dict) when the entry's form has extra fields.
+    subject, category, timestamp, form, tags (list[str]), text, url (the
+    entry's page in the logbook, for links), and may have fields (dict) when
+    the entry's form has extra fields.
     """
-    return _get_ecl().search(
+    found = _get_ecl().search(
         category=category,
         after=after,
         before=before,
@@ -196,6 +208,7 @@ def search_entries(
         words=words,
         limit=limit,
     )
+    return [_with_url(e) for e in found] if isinstance(found, list) else found
 
 
 @mcp.tool(name="ecl_search_entry_ids")
@@ -233,8 +246,9 @@ def search_entry_ids(
 @mcp.tool(name="ecl_get_entry")
 @_wrap
 def get_entry(entry_id: int) -> dict[str, Any]:
-    """Fetch a single ECL entry by its numeric ID."""
-    return _get_ecl().get_entry(entry_id=entry_id)
+    """Fetch a single ECL entry by its numeric ID. The result carries ``url``,
+    the entry's page in the logbook."""
+    return _with_url(_get_ecl().get_entry(entry_id=entry_id))
 
 
 @mcp.tool(name="ecl_list_categories")

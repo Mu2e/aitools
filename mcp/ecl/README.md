@@ -29,6 +29,10 @@ Read-only (always registered): `get_server_info`, `ecl_search_entries`,
 `ecl_search_entry_ids`, `ecl_get_entry`, `ecl_list_categories`,
 `ecl_list_tags`, `ecl_list_forms`.
 
+Every entry returned carries `url`, its page in the logbook's web interface
+(`<ECL_URL>/show?e=<id>`), so an agent can link an entry instead of quoting
+its number.
+
 `ecl_post_entry` is additionally registered when `ECL_MCP_READ_ONLY=false`.
 It takes `do_post` (default `False`) so an agent can prepare and inspect an
 entry before committing it -- there is no undo once `do_post=True` is used.
