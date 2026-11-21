@@ -10,7 +10,7 @@ root = "../.."
 [project]
 name = "slack-mcp"
 dynamic = ["version"]
-description = "Read-only MCP server for an allowlisted set of Mu2e Slack channels (list channels, read recent messages, read a thread), mikey-authenticated"
+description = "MCP server for an allowlisted set of Mu2e Slack channels (list channels, read recent messages, read a thread; posting where an operator switches it on), mikey-authenticated"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
