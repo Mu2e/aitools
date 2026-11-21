@@ -146,6 +146,7 @@ psql -h ifdb11 -p 5477 mu2e_ai_prd -f sql/create_tables.sql
 | `MEMORY_MCP_WRITE_ROLE` | `update_role` | role assumed for inserts |
 | `MEMORY_MCP_MAX_CONTENT_BYTES` | `1048576` | largest accepted document |
 | `MEMORY_MCP_DB_POOL_MAX` | `4` | connection pool size |
+| `PGGSSENCMODE` | `require` | libpq's standard variable. The connection sets `gssencmode` explicitly — psycopg warns the built-in default is not reliably `prefer` in `psycopg[binary]` builds, where some behave as `disable`. Authentication is GSSAPI either way; this decides whether the **transport** is GSSAPI-encrypted, which should not vary with how the wheel was built. No `MEMORY_MCP_*` name of its own: `disable` is never wanted, and this is a hardening choice made once for every MCP. `PGGSSENCMODE=prefer` in the unit's `EnvironmentFile` recovers without a redeploy if the database ever stops offering gss encryption. |
 | `MEMORY_MCP_LOG_LEVEL` | `INFO` | logger level |
 | `KRB5CCNAME` | _(system default)_ | Kerberos credential cache for the database connection — set it via `--krb5-ccname` whenever a renewal job maintains a non-default cache (see below) |
 

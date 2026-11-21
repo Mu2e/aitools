@@ -68,6 +68,27 @@ DEFAULT_WRITE_ROLE = "update_role"
 DEFAULT_DB_TIMEOUT_SECONDS = 30
 DEFAULT_DB_POOL_MAX = 4
 
+# Pinned, not configurable. psycopg warns (RuntimeWarning, at every connection)
+# that libpq's default is not reliably 'prefer' in psycopg[binary] builds --
+# some behave as 'disable'. The connection authenticates with GSSAPI either
+# way; this decides whether the TRANSPORT is GSSAPI-encrypted, which should not
+# vary silently with how the wheel was built.
+#
+# 'require' rather than libpq's documented 'prefer' default: the database
+# offers GSSAPI encryption, so there is no reason to accept a plain-text
+# fallback that nothing would report. Verified 2026-11-20 for agentlog-mcp,
+# which reaches the same database from the same host with the same
+# psycopg[binary] build (PGGSSENCMODE=require, `--check` -> database ok) --
+# the server supporting gss encryption is not enough on its own, because
+# psycopg bundles its OWN libpq and that is what has to negotiate it.
+#
+# No flag or MEMORY_MCP_* variable: 'disable' is never wanted, and this is a
+# hardening choice to take once for every MCP rather than vary per install. The
+# standard libpq PGGSSENCMODE is honored, which is the recovery path if the
+# database ever stops offering gss encryption -- set PGGSSENCMODE=prefer in the
+# unit's EnvironmentFile and restart, no redeploy.
+GSSENCMODE = os.environ.get("PGGSSENCMODE") or "require"
+
 # Ceiling on a single stored document. Postgres TEXT would take far more; this
 # is about keeping the store useful (and one runaway agent from filling it).
 MAX_CONTENT_BYTES = 1_048_576  # 1 MiB
@@ -198,6 +219,7 @@ def _get_pool() -> ConnectionPool:
                 dbname=_config.db_name,
                 application_name="memory-mcp",
                 connect_timeout=_config.db_timeout_seconds,
+                gssencmode=GSSENCMODE,
             )
             _pool = ConnectionPool(
                 conninfo,
@@ -984,9 +1006,9 @@ def _preflight() -> None:
         ) from e
 
     LOGGER.info(
-        "database ok: %s:%s/%s schema=%s, login=%s, write_role=%s",
+        "database ok: %s:%s/%s schema=%s, login=%s, write_role=%s, gssencmode=%s",
         _config.db_host, _config.db_port, _config.db_name,
-        _config.db_schema, login_role, _config.write_role,
+        _config.db_schema, login_role, _config.write_role, GSSENCMODE,
     )
 
 
