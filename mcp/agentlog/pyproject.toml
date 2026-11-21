@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+# Version comes from the nearest git tag (setuptools_scm), not a hand-maintained
+# field here -- see ../registry/pyproject.toml's comment for why.
+[tool.setuptools_scm]
+root = "../.."
+
+[project]
+name = "agentlog-mcp"
+dynamic = ["version"]
+description = "Streamable-HTTP MCP server where agents file reports of investigations, backed by Postgres, mikey-authenticated"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "mcp>=2.0.0",
+  "mikey @ git+https://github.com/Mu2e/aitools#subdirectory=mcp/mikey",
+  "psycopg[binary]>=3.1",
+  "psycopg_pool>=3.2",
+]
+
+[project.scripts]
+agentlog-mcp = "agentlog_mcp.server:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+script-files = ["scripts/agentlog-mcp.sh", "scripts/agentlog-mcp-install-unit.sh"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# The DDL travels with the installed release so an operator never has to guess
+# which version of the schema a running server expects. Neither file is run by
+# the install script -- see scripts/install.sh.
+[tool.setuptools.data-files]
+"share/agentlog-mcp" = [
+  "sql/create_tables.sql",
+  "sql/migrations/001-fix-range-projection-checks.sql",
+]
