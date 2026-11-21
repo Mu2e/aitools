@@ -74,6 +74,31 @@ def build_auth_kwargs(
     url = server_url or os.environ.get(ENV_SERVER_URL) or _PLACEHOLDER_URL
     store = KeyStore(resolved)
     return {
-        "auth": AuthSettings(issuer_url=url, resource_server_url=url),
+        # validate_token_resource=False is REQUIRED here, not a preference, and
+        # setting it explicitly is what keeps every mikey-authenticated server
+        # working across the SDK's next major release.
+        #
+        # A mikey token is a static shared secret. It carries no RFC 8707
+        # resource indicator, so MikeyTokenVerifier returns an AccessToken with
+        # `resource` unset -- there is no audience to check, and stamping one on
+        # would be asserting a claim the token does not make.
+        #
+        # The SDK's resource check (BearerAuthBackend._issued_for_this_resource)
+        # does `AnyHttpUrl(resource or "")` and treats the resulting
+        # ValidationError as a mismatch, so a token with no resource FAILS it and
+        # the request gets a 401. That check runs whenever resource_server_url is
+        # set and validate_token_resource is true. Leaving it unset gets a
+        # deprecation warning today and defaults to True in 3.0 -- at which point
+        # every server built with these kwargs would reject every valid key.
+        # Declaring False pins today's behavior through that change.
+        #
+        # If mikey ever issues per-resource tokens, this is the line to revisit:
+        # set the AccessToken's `resource` in verify_token first, then flip this
+        # to True.
+        "auth": AuthSettings(
+            issuer_url=url,
+            resource_server_url=url,
+            validate_token_resource=False,
+        ),
         "token_verifier": MikeyTokenVerifier(store),
     }
