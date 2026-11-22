@@ -1,7 +1,7 @@
 ---
 name: making-event-display-images
-description: Save pictures (PNG) of Mu2e events with the Offline EventDisplay in batch, with no X display and no clicks, from an art file. Use when asked for an event display, an event picture, "show me event run:subrun:event", to draw MC trajectories, track fits, straw hits, CRV pulses or calorimeter hits of an event, or to make display images for a note, a talk or a list of events. Covers the imageOutput fcl table (Mu2e/Offline#2203), finding collection names, views, ranges and true scale, and what to do on releases that do not have it yet.
-compatibility: Requires a Mu2e gpvm with cvmfs and muse, an Offline release newer than v13_47_01 (or a local build of the EventDisplay package, recipe included), and read access to the art file. No X display.
+description: Save pictures (PNG) of Mu2e events with the Offline EventDisplay in batch, with no X display and no clicks, from an art file. Use when asked for an event display, an event picture, "show me event run:subrun:event", to draw MC trajectories, track fits, straw hits, CRV pulses or calorimeter hits of an event, or to make display images for a note, a talk or a list of events. Covers the imageOutput fcl table (Mu2e/Offline#2203), finding collection names, views, ranges and true scale, and which Offline to use while no release has the feature.
+compatibility: Requires a Mu2e gpvm with cvmfs and muse, an Offline that has Mu2e/Offline#2203 (an official release newer than v13_47_01, or the HEAD CI build of main until one exists), and read access to the art file. No X display.
 metadata:
   version: "1.0.0"
   last-updated: "2026-11-22"
@@ -22,43 +22,44 @@ Every `muse setup` needs its own new shell, and `source
 /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh` before it. Run `muse setup` plainly: not in a
 pipe, not in `$( )`.
 
-## 1. Use an Offline that has `imageOutput`
+## 1. Set up an Offline that has `imageOutput`
 
-Releases up to and including v13_47_01 do not have it. **They ignore the table without a
-message** and try to open a window: the job then crashes (exit 139, no screen) or waits for
-clicks forever (with a screen). So check before anything else:
+Use the official SimJob release if it has the feature, and HEAD (the latest CI build of `main`)
+until one does. Build nothing yourself.
+
+Offline up to and including v13_47_01 does not have it; that covers every SimJob release up to
+MDC2025be. **Such a release ignores the table without a message** and tries to open a window:
+the job then crashes (exit 139, no screen) or waits for clicks forever (with a screen). So
+check before anything else:
 
 ```bash
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh
-muse setup Offline <version>          # or: SimJob <campaign>, or a muse workdir
+muse setup SimJob <campaign>          # the official release; or: Offline <version>
 for d in ${MU2E_SEARCH_PATH//:/ }; do
   f=$d/Offline/EventDisplay/fcl/EventDisplayBase.fcl
-  [ -f $f ] && { grep -c imageOutput $f; break; }     # 0 means: this Offline does not have it
+  [ -f $f ] && { grep -c imageOutput $f; break; }
 done
 ```
 
-If it prints 0, build the `EventDisplay` package alone on top of v13_47_01, in a new shell. The
-build itself takes under a minute (see the `building-with-muse` skill, "Partial Offline Build
-with Backing"):
+- A number above 0: this release has it. Use it.
+- 0: it does not. Use HEAD, in a new shell:
 
 ```bash
-W=/exp/mu2e/app/users/$USER/evd-build; mkdir -p $W && cd $W
-git clone --filter=blob:none --no-checkout https://github.com/Mu2e/Offline
-git -C Offline sparse-checkout set EventDisplay
-git -C Offline checkout v13_47_01                     # the tag of the backing release
-git -C Offline checkout 9fff9068a -- EventDisplay     # the package as merged by #2203
+W=/exp/mu2e/app/users/$USER/evd-head; mkdir -p $W && cd $W
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh
-muse backing Offline v13_47_01
+muse backing HEAD                     # links $W/backing to the latest CI build of main
 muse setup
-muse build -j 8 --mu2eCompactPrint
 ```
 
-In a later shell: `source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh; muse setup $W`.
-The check above then prints 2.
+Run the check loop again in that shell: it must print a number above 0. In a later shell:
+`source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh; muse setup $W`.
 
-Do not check out `main` itself for this build. Its `.muse` file asks for a newer environment
-(p111) than v13_47_01 was built with (p110), and `muse setup` stops with "backing build area
-missing required build". The batch images were tested in both environments (ROOT 6.38.00).
+- HEAD is not a release, it moves with `main`. Say in your report which build you used:
+  `readlink $W/backing` (the folder name starts with the Offline commit).
+- CI builds are removed after some days. `muse setup` then finds no Offline and the check prints
+  nothing. Run `muse backing HEAD` again in `$W`, in a new shell.
+- Go back to the official release as soon as one has the feature (the first Offline tag after
+  v13_47_01, and the SimJob built on it).
 
 ## 2. Find the art file and the event
 
@@ -81,7 +82,8 @@ echo $d/$f                            # the full path
 - `-e run:subrun:event` on the `mu2e` command line jumps straight to the event, also in an
   18 GB file.
 - A newer Offline usually reads an older file: an MDC2025au file made with v13_33_00 was read
-  with v13_47_01. That is not guaranteed. If it fails, say so; do not switch files silently.
+  with HEAD of 2026-11-22. That is not guaranteed. If it fails, say so; do not switch files
+  silently.
 
 ## 3. Write the fcl
 
