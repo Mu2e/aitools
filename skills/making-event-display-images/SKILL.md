@@ -80,6 +80,18 @@ echo $d/$f                            # the full path
 - A newer Offline usually reads an older file: an MDC2025au file made with v13_33_00 was read
   with HEAD of 2026-11-22. That is not guaranteed. If it fails, say so; do not switch files
   silently.
+- Not every event of an `mcs` file has a fit or hits. In a conversion-electron file the first
+  three events had neither, and their pictures showed the MC particles only. If no event was
+  given, list which events have a fit, in a shell set up as in step 1 (here for the downstream
+  electron fit, `KKDe`):
+
+```bash
+mu2e -c Offline/Print/fcl/printKalSeed.fcl -s <full path of the file> -n 20 2>&1 |
+  awk '/PrintModule Run\/Subrun\/Event/{ev=$4":"$5":"$6}
+       /ProductPrint mu2e::KalSeeds_KKDe_/{getline; print ev, $3, "fits"}'
+```
+
+  It prints lines like `1430:0:8 0 fits` and `1430:0:9 1 fits`. Take an event with a fit.
 
 ## 3. Write the fcl
 
@@ -190,6 +202,9 @@ Open each image (an agent reads the PNG) and check, before showing it to anyone:
 - hits are there: they have no legend entry, only coloured markers and the time scale at the
   top right;
 - the range holds what the picture is about.
+
+A picture with no fit line and `nan` in the time scale is not a failure of the display: that
+event has no fit and no hits in the collections asked for. Pick another event (step 2).
 
 ## Views, ranges and true scale
 
