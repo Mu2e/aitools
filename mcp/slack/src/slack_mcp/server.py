@@ -63,6 +63,7 @@ PAGE = 200  # Slack's conversations.history page size
 POST_MAX_CHARS = int(os.environ.get("SLACK_MCP_POST_MAX_CHARS", "12000"))
 POST_PER_HOUR = int(os.environ.get("SLACK_MCP_POST_PER_HOUR", "5"))
 POST_FOOTER = "_AI-generated; may contain mistakes._"
+DRY_RUN_TS = "0.000000"  # what a dry run returns as the ts of its post
 
 INSTRUCTIONS = (
     "Read-only access to a fixed, operator-chosen set of Mu2e Slack channels "
@@ -572,7 +573,9 @@ def post_message(channel: str, text: str, thread_ts: str | None = None) -> dict[
     pieces = chunks(to_mrkdwn(text.rstrip() + (f"\n\n{footer}" if footer else "")))
     where = {"id": ch["id"], "name": ch.get("name")}
     if os.environ.get("SLACK_MCP_POST_DRY_RUN", "").strip().lower() in ("1", "true", "yes"):
-        return {"channel": where, "posted": False, "dry_run": True, "messages": pieces}
+        # A ts that can be given back as thread_ts, so that a post with
+        # replies can be tried as a whole.
+        return {"channel": where, "posted": False, "dry_run": True, "ts": DRY_RUN_TS, "messages": pieces}
     digest = hashlib.sha256(f"{ch['id']}\n{thread_ts or ''}\n{text.strip()}".encode()).hexdigest()
     stamps = r.post(ch["id"], pieces, thread_ts, digest)
     links = [permalink(r.team_url, ch["id"], ts, thread_ts) for ts in stamps]
@@ -588,7 +591,7 @@ def post_message(channel: str, text: str, thread_ts: str | None = None) -> dict[
                 fh.write(json.dumps(record) + "\n")
         except OSError as exc:
             LOGGER.warning("could not write %s: %s", log, exc)
-    return {"channel": where, "posted": True, "messages": len(links), "permalinks": links}
+    return {"channel": where, "posted": True, "ts": stamps[0], "messages": len(links), "permalinks": links}
 
 
 def _register_post() -> bool:
@@ -608,12 +611,13 @@ def _register_post() -> bool:
             "The message, as normal Markdown (bold, lists, [text](url) links, code blocks). "
             f"At most {POST_MAX_CHARS} characters; a long one is split into several messages."))],
         "thread_ts": Annotated[str | None, Field(description=(
-            "To reply in a thread: the ts of its first message. Leave out for a new message."))],
+            "To reply in a thread: the ts of its first message (the ts this tool returned for it). "
+            "Leave out for a new message."))],
         "return": dict[str, Any],
     }
     mcp.tool(
         name="slack_post_message", title="Post to Slack",
-        description=("Post a message to a Slack channel; returns its permalink. Visible to everyone in the "
+        description=("Post a message to a Slack channel; returns its permalink and ts. Visible to everyone in the "
                      "channel, and it cannot be edited or removed from here: post only what you were asked "
                      "to, once. Nobody is notified (@channel and @name stay plain text). At most "
                      f"{POST_PER_HOUR} posts an hour; the same text is not posted twice. A line saying "

@@ -40,7 +40,7 @@ Off by default. With `SLACK_MCP_POST_CHANNELS` set, a stdio copy also offers
 
 | Tool | Does |
 |---|---|
-| `slack_post_message(channel, text, thread_ts=None)` | posts `text` to one of the post channels (or as a reply in a thread there) and returns the permalink |
+| `slack_post_message(channel, text, thread_ts=None)` | posts `text` to one of the post channels (or as a reply in a thread there) and returns the permalink and the `ts` (give it as `thread_ts` to reply to that post) |
 
 It is meant for one application that starts its own copy with its own
 lists, for example a digest automation that writes to one channel. The HTTP

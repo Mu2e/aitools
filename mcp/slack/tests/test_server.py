@@ -230,7 +230,9 @@ def test_post_dry_run_and_log(poster, monkeypatch, tmp_path):
     monkeypatch.setenv("SLACK_MCP_POST_DRY_RUN", "1")
     out = S.post_message("test_llm", "**x**")
     assert out == {"channel": {"id": "G0000000002", "name": "test_llm"}, "posted": False, "dry_run": True,
-                   "messages": ["*x*"]} and not posts(poster)
+                   "ts": S.DRY_RUN_TS, "messages": ["*x*"]} and not posts(poster)
+    # the ts of a dry run is accepted for a reply, which is not posted either
+    assert S.post_message("test_llm", "more", thread_ts=out["ts"])["posted"] is False and not posts(poster)
     monkeypatch.delenv("SLACK_MCP_POST_DRY_RUN")
     monkeypatch.setenv("SLACK_MCP_POST_LOG", str(tmp_path / "posts.jsonl"))
     S.post_message("test_llm", "secret words")
@@ -294,3 +296,11 @@ def test_footer(poster, monkeypatch):
 def test_no_empty_lines_around_a_code_block():
     from slack_mcp.mrkdwn import to_mrkdwn
     assert to_mrkdwn("a\n\n```\nx < y\n```\n\n\nb") == "a\n```\nx &lt; y\n```\nb"
+
+
+def test_post_returns_the_ts_for_a_reply(poster):
+    first = S.post_message("test_llm", "the short post")
+    assert first["ts"] and first["permalinks"]
+    reply = S.post_message("test_llm", "more on one topic", thread_ts=first["ts"])
+    assert reply["posted"] is True and reply["ts"] != first["ts"]
+    assert [c[3] for c in posts(poster)] == [None, first["ts"]]
