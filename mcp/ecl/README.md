@@ -41,7 +41,7 @@ entry before committing it -- there is no undo once `do_post=True` is used.
 
 | Variable             | Default       | Purpose                                        |
 |----------------------|---------------|-------------------------------------------------|
-| `ECL_URL`            | _(required)_  | ECL base URL, e.g. `https://dbweb9.fnal.gov:8443/ECL/mu2e/E` |
+| `ECL_URL`            | _(required)_  | ECL base URL, e.g. `https://dbweb0.fnal.gov/ECL/mu2e/E` (the address that passes on to a server that is up; a `dbwebN:8443` one is a single server) |
 | `ECL_USER_NAME`      | _(required)_  | XML user name                                  |
 | `ECL_PASSWORD`       | _(required)_  | XML user password                              |
 | `ECL_MCP_READ_ONLY`  | `true`        | Set to `false` to register `ecl_post_entry`    |

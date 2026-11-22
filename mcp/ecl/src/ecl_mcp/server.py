@@ -108,12 +108,23 @@ def _get_ecl() -> ECL:
         return _ecl_instance
 
 
+def _web_base() -> str | None:
+    """The logbook's address as configured (ECL_URL), not the server the
+    client was redirected to: the configured one (dbweb0) passes a reader on
+    to a server that is up, while a resolved one (dbweb-a:8443, dbweb2:8443)
+    stops answering when that server is taken out."""
+    base = (os.environ.get("ECL_URL") or "").strip().rstrip("/")
+    if base.endswith("/index"):
+        base = base[:-len("/index")]
+    if base and not base.endswith("/E"):
+        base += "/E"
+    return base or getattr(_get_ecl(), "_url", None)
+
+
 def _with_url(entry: Any) -> Any:
     """Add ``url``, the entry's page in the logbook's web interface, so a
-    caller can point a reader at the entry instead of quoting its number.
-    The address is the one the client talks to (ECL_URL, resolved to the
-    active server), so it is right for this deployment's logbook."""
-    base = getattr(_get_ecl(), "_url", None)
+    caller can point a reader at the entry instead of quoting its number."""
+    base = _web_base()
     if base and isinstance(entry, dict) and entry.get("id") is not None and "url" not in entry:
         entry["url"] = f"{str(base).rstrip('/')}/show?e={entry['id']}"
     return entry
