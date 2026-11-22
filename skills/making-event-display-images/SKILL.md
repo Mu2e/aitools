@@ -45,19 +45,15 @@ done
 - 0: it does not. Use HEAD, in a new shell:
 
 ```bash
-W=/exp/mu2e/app/users/$USER/evd-head; mkdir -p $W && cd $W
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh
-muse backing HEAD                     # links $W/backing to the latest CI build of main
-muse setup
+muse setup HEAD                       # the latest CI build of main; no workdir needed
 ```
 
-Run the check loop again in that shell: it must print a number above 0. In a later shell:
-`source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh; muse setup $W`.
+Run the check loop again in that shell: it must print a number above 0.
 
-- HEAD is not a release, it moves with `main`. Say in your report which build you used:
-  `readlink $W/backing` (the folder name starts with the Offline commit).
-- CI builds are removed after some days. `muse setup` then finds no Offline and the check prints
-  nothing. Run `muse backing HEAD` again in `$W`, in a new shell.
+- HEAD is not a release, it moves with `main`: a new shell can get a newer build. Say in your
+  report which build you used: `echo $MUSE_WORK_DIR` (the folder name starts with the Offline
+  commit).
 - Go back to the official release as soon as one has the feature (the first Offline tag after
   v13_47_01, and the SimJob built on it).
 
