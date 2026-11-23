@@ -97,6 +97,64 @@ login to ALCF expires after 30 days, and an automation firing at night would
 then fail. A restart repeats nothing, and does not stop chats that are
 already running.
 
+### Digests in Slack
+
+The templates `docdb-digest/docdb-daily.json` and `docdb-weekly.json` end
+with a post to a Slack channel. The tool for that comes from the Slack MCP
+server ([mcp/slack](../../mcp/slack/README.md), "Posting"), run over stdio
+by hep-genesis itself, with its own list of channels. It is an entry in the
+data folder's `servers.json`, switched off, so that no chat has it; an
+automation that names it in its `servers` gets it all the same.
+
+```bash
+P=/exp/mu2e/app/users/mu2eai/mcp/slack-post       # an install for posting only
+mcp/slack/scripts/install.sh $P <tag>             # ignore its "next steps": no service is needed
+# the bot token into $P/token (mode 600); invite the bot to the channel
+SLACK_BOT_TOKEN=$(cat $P/token) SLACK_MCP_CHANNELS=<channel> SLACK_MCP_POST_CHANNELS=<channel> \
+  $P/current/.venv/bin/slack-mcp --check          # lists the channel under "posting: to"
+```
+
+The entry, in `"servers"` of `$D/servers.json` (it is read at every chat's
+start; nothing needs a restart):
+
+```json
+{
+  "name": "slack-digest",
+  "transport": "stdio",
+  "enabled": false,
+  "command": "<P>/current/.venv/bin/slack-mcp-stdio",
+  "env": {
+    "SLACK_BOT_TOKEN": {"file": "<P>/token"},
+    "SLACK_MCP_CHANNELS": "<channel>",
+    "SLACK_MCP_POST_CHANNELS": "<channel>",
+    "SLACK_MCP_POST_LOG": "<P>/posts.jsonl",
+    "SLACK_MCP_POST_DRY_RUN": "1"
+  }
+}
+```
+
+- **The channel** is named in three places that must agree: the two lists of
+  the entry, and the prompt of each template (`mu2e-ai-test` as shipped). The
+  server posts to no other channel, whatever a prompt says.
+- **`SLACK_MCP_POST_DRY_RUN`**: with `1` nothing is posted and the chat shows
+  what would have been. Try a changed prompt that way, then remove the line.
+- **Reading** (`SLACK_MCP_CHANNELS`) is what lets the weekly digest read the
+  daily ones of its week.
+- **A post that has to go**: `$P/current/.venv/bin/slack-mcp --delete <permalink>`
+  with the bot token in the environment; the permalinks of everything posted
+  are in `posts.jsonl`.
+
+Then the automations, as above:
+
+```bash
+$I/current/bin/hep-genesis-add-automation docdb-digest/docdb-daily.json
+$I/current/bin/hep-genesis-add-automation docdb-digest/docdb-weekly.json
+systemctl --user restart hep-genesis-automations
+```
+
+The daily one runs Tuesday to Saturday, for Monday to Friday; the weekly one
+on Monday covers the weekend.
+
 ### The web UI of the service
 
 To read the chats the automations start, and to edit the automations in a

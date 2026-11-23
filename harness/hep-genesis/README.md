@@ -107,7 +107,13 @@ condition is met. Two templates come with the harness:
 | Template | Checks | Fires | Starts |
 |---|---|---|---|
 | `dqm-alarm/dqm-alarms.json` | `dqm.list_alarms` (open), every 5 min | a new alarm, or a change of an alarm's level | a quick chat that investigates it with dqm, runs, ecl, kb |
-| `docdb-digest/docdb-daily.json` | the clock | every day at 08:00 | a quick chat that writes a digest of the last day's DocDB documents (kb) |
+| `docdb-digest/docdb-daily.json` | the clock | Tuesday to Saturday at 08:00 | a quick chat that writes a short digest of the day before, by topic: DocDB (kb), with the logbook, runs and data quality where they add something, and posts it to a Slack channel |
+| `docdb-digest/docdb-weekly.json` | the clock | Monday at 08:00 | the same for the week Monday to Sunday: one short post on where things stand, and up to three replies in its thread for what is worth more |
+
+The two digests post to Slack, which needs a server entry of its own that is
+not part of the site's list: see "Digests in Slack" in [SERVICE.md](SERVICE.md).
+Without it they write the digest as the chat's answer and say that they could
+not post.
 
 Add one to your own data folder with
 `hep-genesis-add-automation <project>/<name>.json`, then start it in the web
