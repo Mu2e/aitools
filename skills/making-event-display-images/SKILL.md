@@ -1,6 +1,6 @@
 ---
 name: making-event-display-images
-description: Save pictures (PNG) of Mu2e events with the Offline EventDisplay in batch, with no X display and no clicks, from an art file. Use when asked for an event display, an event picture, "show me event run:subrun:event", to draw MC trajectories, track fits, straw hits, CRV pulses or calorimeter hits of an event, or to make display images for a note, a talk or a list of events. Covers the imageOutput fcl table (Mu2e/Offline#2203), finding collection names, views, ranges and true scale, and which Offline to use while no release has the feature.
+description: Save pictures (PNG) of Mu2e events with the Offline EventDisplay in batch, with no X display and no clicks, from an art file (MC, or real CRV data). Use when asked for an event display, an event picture, "show me event run:subrun:event", to draw MC trajectories, track fits, straw hits, CRV pulses or calorimeter hits of an event, or to make display images for a note, a talk or a list of events. Covers the imageOutput fcl table (Mu2e/Offline#2203), finding collection names, views, ranges and true scale, and which Offline to use while no release has the feature.
 compatibility: Requires a Mu2e gpvm with cvmfs and muse, an Offline that has Mu2e/Offline#2203 (an official release newer than v13_47_01, or the HEAD CI build of main until one exists), and read access to the art file. No X display.
 metadata:
   version: "1.0.0"
@@ -86,9 +86,27 @@ physics.analyzers.eventdisplay.imageOutput : {
 
 Name what you want drawn: the display's own defaults do not exist in an `mcs` file.
 
-Include `EventDisplayRun1a.fcl` for MDC2025 samples in the Run 1A geometry, and
-`EventDisplayExtracted.fcl` for samples with `Extracted` in the name. The other configurations
-in `Offline/EventDisplay/fcl/` are untested in batch. Never include `EventDisplayBase.fcl` alone.
+Include `EventDisplayRun1a.fcl` for MDC2025 samples in the Run 1A geometry,
+`EventDisplayExtracted.fcl` for samples with `Extracted` in the name, and
+`EventDisplayExtractedRealCrvOnly.fcl` for real CRV data (the KPP setup). The other
+configurations in `Offline/EventDisplay/fcl/` are untested in batch. Never include
+`EventDisplayBase.fcl` alone.
+
+Real CRV data has no tracks; the CRV bars are drawn. For example event 125026:1:227 of
+`rec.mu2e.cosmics_crv.crvreco-006-001.125026_000001-001.art`:
+
+```
+#include "Offline/EventDisplay/fcl/EventDisplayExtractedRealCrvOnly.fcl"
+
+physics.analyzers.eventdisplay.imageOutput : {
+  tracks  : [ ]
+  crvHits : "CrvRecoPulse:CrvRecoPulses:"
+  views   : [
+    { view : "side" file : "evd-%r-%s-%e-side.png" },
+    { view : "end"  file : "evd-%r-%s-%e-end.png" }
+  ]
+}
+```
 
 ## 4. Find the names of the collections
 
@@ -103,7 +121,7 @@ Official MDC2025 `mcs` files offer:
 | tracks | `SimParticle:compressRecoMCs:` (MC truth); fits `KalSeed:KKDe:`, `KKUe`, `KKDmu`, `KKUmu` (downstream or upstream, electron or muon); extracted position: `KalSeed:KKLine:` |
 | tracker hits | the same `KalSeed:` names: the straw hits of that fit |
 | calorimeter hits | `CaloHit:CaloHitMaker:`, `CaloDigi:SelectReco:` |
-| CRV hits | `CrvRecoPulse:SelectReco:` |
+| CRV hits | `CrvRecoPulse:SelectReco:`; real CRV data (`rec` files): `CrvRecoPulse:CrvRecoPulses:` |
 
 ## 5. Run
 
@@ -127,6 +145,8 @@ Read each PNG before showing it:
 
 No fit line and `nan` in the time scale mean an event without fit and hits: pick another one
 (step 2).
+
+A user with a screen on the machine can look at a picture with `xdg-open <file>.png`.
 
 ## Views and ranges
 
