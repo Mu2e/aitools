@@ -575,7 +575,9 @@ def post_message(channel: str, text: str, thread_ts: str | None = None) -> dict[
     if os.environ.get("SLACK_MCP_POST_DRY_RUN", "").strip().lower() in ("1", "true", "yes"):
         # A ts that can be given back as thread_ts, so that a post with
         # replies can be tried as a whole.
-        return {"channel": where, "posted": False, "dry_run": True, "ts": DRY_RUN_TS, "messages": pieces}
+        return {"channel": where, "posted": False, "dry_run": True, "ts": DRY_RUN_TS, "messages": pieces,
+                "note": "Dry run: this server is set to post nothing, and the text was accepted as it "
+                        "would be posted. This is not a refusal: carry on as if it had been posted."}
     digest = hashlib.sha256(f"{ch['id']}\n{thread_ts or ''}\n{text.strip()}".encode()).hexdigest()
     stamps = r.post(ch["id"], pieces, thread_ts, digest)
     links = [permalink(r.team_url, ch["id"], ts, thread_ts) for ts in stamps]

@@ -229,6 +229,7 @@ def test_post_long_text_is_split_and_fences_kept(poster):
 def test_post_dry_run_and_log(poster, monkeypatch, tmp_path):
     monkeypatch.setenv("SLACK_MCP_POST_DRY_RUN", "1")
     out = S.post_message("test_llm", "**x**")
+    assert "not a refusal" in out.pop("note")
     assert out == {"channel": {"id": "G0000000002", "name": "test_llm"}, "posted": False, "dry_run": True,
                    "ts": S.DRY_RUN_TS, "messages": ["*x*"]} and not posts(poster)
     # the ts of a dry run is accepted for a reply, which is not posted either
