@@ -4,7 +4,7 @@ description: Save pictures (PNG) of Mu2e events with the Offline EventDisplay in
 compatibility: Requires a Mu2e gpvm with cvmfs and muse, an Offline that has Mu2e/Offline#2203 (an official release newer than v13_47_01, or the HEAD CI build of main until one exists), and read access to the art file. No X display.
 metadata:
   version: "1.0.0"
-  last-updated: "2026-11-22"
+  last-updated: "2026-11-23"
 ---
 
 # Making event display images
@@ -25,7 +25,7 @@ the job crashes (exit 139) or waits for clicks. So check:
 ```bash
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh
 muse setup SimJob <campaign>
-for d in ${MU2E_SEARCH_PATH//:/ }; do
+for d in ${FHICL_FILE_PATH//:/ }; do
   f=$d/Offline/EventDisplay/fcl/EventDisplayBase.fcl
   [ -f $f ] && { grep -c imageOutput $f; break; }
 done
@@ -36,17 +36,24 @@ again. HEAD moves with `main`: report the build you used (`echo $MUSE_WORK_DIR`)
 
 ## 2. Find the file and the event
 
-Use the reconstruction output (`mcs`): it has the MC truth, the fits and the CRV pulses. Locate
-it in a shell of its own, and read it in place (never copy a tape-backed file):
+Use the reconstruction output (`mcs` for MC, `rec` for data): it has the MC truth, the fits and
+the CRV pulses. Locate it in a shell of its own, and read it in place (never copy a tape-backed
+file):
 
 ```bash
 source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh
 muse setup ops
-f=mcs.mu2e.CosmicSignalOnSpill.MDC2025au_best_v1_5.001430_00000002.art
-d=$(SAM_EXPERIMENT=mu2e samweb locate-file $f | sed 's/^[a-z]*://; s/(.*//')
-cat "$d/.(get)($f)(locality)"         # NEARLINE alone: on tape, prestage first
-echo $d/$f                            # the full path, for the next steps
+pickEvent -m mcs.mu2e.CeMLeadingLogOnSpill.MDC2025be_best_v2_0.art 1430/0/9   # prints the file
+f=mcs.mu2e.CeMLeadingLogOnSpill.MDC2025be_best_v2_0.001430_00000000.art
+p=$(mdh print-url $f)
+cat "$(dirname $p)/.(get)($f)(locality)"   # NEARLINE alone: on tape, prestage first
+echo $p                                    # the full path, for the next steps
 ```
+
+`pickEvent` trusts the run lists of the file catalog, and some MC datasets list only part of a
+file's subruns: for 1430/42354/139597 of `mcs.mu2e.CosmicSignalOnSpill.MDC2025au_best_v1_5.art`
+it prints `No files found`, yet the event is in file `001430_00000002`. Given a file name, start
+at `mdh print-url`.
 
 Many events have no fit and no hits. If no event was given, list the ones with a fit, in the
 shell of step 1 (here the downstream electron fit, `KKDe`), and take one:
@@ -128,7 +135,7 @@ Official MDC2025 `mcs` files offer:
 In the shell of step 1:
 
 ```bash
-mu2e -c evd.fcl -s <full path> -e 1430:42354:139597 -n 1 > evd.log 2>&1; echo "exit $?"
+mu2e -c evd.fcl -s <full path> -e 1430:0:9 -n 1 > evd.log 2>&1; echo "exit $?"
 ```
 
 Success is exit status 0 and one line `png file ... has been created` per image, in 5 to 7 s
