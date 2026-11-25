@@ -21,19 +21,26 @@ requires-python = ">=3.10"
 # imports them directly. The [web] extra is deliberately not requested: this
 # server has no use for dash/plotly.
 #
-# Pinned to a DQM tag, so a rebuild months from now installs the same reader
-# this server was tested against. Tracking `main` meant whatever happened to
-# be there at venv-build time. Bump it deliberately when adopting a release.
+# Two floors, both for the same reason -- a tool that reads part of the
+# reader that an older tag does not have fails at call time, which reads like
+# a bug in the tool rather than a version mismatch:
 #
-# v2.1.0 is the floor for the alarm tools, not a preference: list_alarms and
-# get_alarm_causes read dqm.schema.ALARM_LEVELS (the episode severity
-# vocabulary, which is NOT the limits alarmcode), and that was added after
-# v2.0.0. Against v2.0.0 both tools raise AttributeError at call time while
-# every other tool keeps working -- so the failure looks like a bug in the
-# tools rather than a version mismatch.
+#   v2.1.0  the alarm tools. list_alarms and get_alarm_causes read
+#           dqm.schema.ALARM_LEVELS (the episode severity vocabulary, NOT the
+#           limits alarmcode), added after v2.0.0.
+#   v2.1.6  the file tools. list_files, get_golden_file and list_golden need
+#           DqmReader.files() and .golden(), added in DQM commit 5e5e6b9
+#           ("add files and golden to the reader"); v2.1.5 and earlier have
+#           neither. Against an older reader those three raise the
+#           RuntimeError _require_file_support builds, which names this line;
+#           every other tool keeps working.
+#
+# So v2.1.6 is the floor, and the pin is deliberate rather than tracking
+# `main`: a rebuild months from now installs the reader this server was
+# tested against. Bump it when adopting a release.
 dependencies = [
   "mcp>=2.0.0",
-  "mu2e-dqm @ git+https://github.com/Mu2e/DQM@v2.1.0#subdirectory=python"
+  "mu2e-dqm @ git+https://github.com/Mu2e/DQM@v2.1.6#subdirectory=python"
 ]
 
 [project.scripts]

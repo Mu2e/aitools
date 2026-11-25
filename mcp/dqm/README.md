@@ -37,7 +37,7 @@ it comes in as a pinned git dependency — nothing extra to do:
 ```toml
 dependencies = [
   "mcp>=2.0.0",
-  "mu2e-dqm @ git+https://github.com/Mu2e/DQM@v2.1.0#subdirectory=python"
+  "mu2e-dqm @ git+https://github.com/Mu2e/DQM@v2.1.6#subdirectory=python"
 ]
 ```
 
@@ -49,14 +49,23 @@ prints the resolved `mu2e-dqm` version, and `get_server_info()` reports the
 version and module path at runtime, so which reader a deployment is actually
 running is never a guess.
 
-> **The pin is a floor, not a preference.** `v2.1.0` is the first DQM release
-> carrying `dqm.schema.ALARM_LEVELS`, which `list_alarms` and
-> `get_alarm_causes` read. Against `v2.0.0` those two tools raise
-> `AttributeError` when called while every other tool keeps working — a
-> failure that looks like a bug in the tools rather than a version mismatch,
-> so it is worth knowing before chasing it. Bump the pin deliberately when
-> adopting a newer reader; tracking a branch instead would let a rebuild
-> silently pick up reader changes never tested against this server.
+> **The pin is a floor, not a preference**, and it has been raised twice for
+> the same kind of reason — a tool reading part of the reader an older tag
+> does not have fails only when called, which reads like a bug in the tool
+> rather than a version mismatch.
+>
+> - `v2.1.0` first carries `dqm.schema.ALARM_LEVELS`, which `list_alarms` and
+>   `get_alarm_causes` read. Against `v2.0.0` those two raise `AttributeError`
+>   while every other tool keeps working.
+> - `v2.1.6` first carries `DqmReader.files()` and `.golden()`, which
+>   `list_files`, `get_golden_file` and `list_golden` need. Against anything
+>   earlier those three fail with a `RuntimeError` naming the pin — checked up
+>   front rather than surfacing as an `AttributeError`, since a missing reader
+>   method is a deployment fact, not a bug.
+>
+> Bump the pin deliberately when adopting a newer reader; tracking a branch
+> instead would let a rebuild silently pick up reader changes never tested
+> against this server.
 
 To deploy against a different reader revision without editing the pin — trying
 a reader branch before tagging it — `install.sh` takes `--dqm-ref`:
@@ -113,6 +122,100 @@ better answer.
     code tallies over *every* matching row, ignoring the display limit
   - `downsample_to=N` — a timeline reduced to about N time bins, each carrying
     the bin's mean, min and max so excursions survive the reduction
+- `list_files(...)`
+  - the files a source's metrics came from, from `dqm.files` — the back pointer
+    from a timeline point to the histogram file that produced it
+- `get_golden_file(...)`
+  - the reference file **in force** for one source at one run or time, from
+    `dqm.golden`, resolving supersession
+- `list_golden(...)`
+  - every golden declaration for a source, newest commit first — the history,
+    superseded rows included
+
+### The two file tables point in opposite directions
+
+Easy to conflate, and getting it wrong means judging a measurement against the
+wrong thing:
+
+| | `dqm.files` | `dqm.golden` |
+|---|---|---|
+| what it says | these numbers came **out of** that file | these numbers should be compared **against** that file |
+| its interval is | where the metrics were **measured** | the range over which the reference is **valid** |
+| rows per source | one per file per interval, several per point normal | several declarations normal, only one applies at a point |
+| keyed by | `(sid, iid)` | `(sid, iid, filename)` — no `vid`: one reference covers every metric |
+| how to read it | filter (`list_files`) | resolve (`get_golden_file`) |
+
+A golden row's interval being one of *validity* is the part that bites. A
+declaration from run 125000 with no end is the reference for every later run
+until a newer one replaces it, so several rows can cover one position and only
+the most recently committed (highest `gid`) applies. Reading any covering row
+off a listing is wrong whenever a reference has been replaced — which is why
+`get_golden_file` is a lookup that performs that resolution and returns what it
+displaced in `superseded`, while `list_golden` is for history and audit.
+`dqm.limits` has exactly the same validity semantics; `dqm.bands` in the DQM
+repository holds the rule for both.
+
+Scoping, and why: both file tools require **one source**, because files are per
+source and an unbounded listing would be capped at a context window's worth of
+rows and so misreported. The exception is `list_files(filename=...)`, the
+reverse lookup — which timeline point produced this file — which needs no
+source. That match is exact: the Query Engine has no `LIKE`, so there is no
+substring search on a name.
+
+A run can map to many files. A `file` aggregation source gets one interval per
+file, so one run of such a source may have a hundred-odd rows (a real case:
+128 files for run 125873). `list_files` says so in `note` and `subrun=`
+isolates one; never report the first row as "the" file for a run. Run matching
+is interval containment, so a source's catch-all interval — a wide run range
+kept to hold limits or a golden declaration — is resolved too, contributing no
+files; `resolved.iids` shows what the position resolved to.
+
+Neither file is fetched, opened or parsed by this server. Both tables record
+names as committed and do not check that the file exists — a golden file may be
+one of the source's own or something made by hand, an average say, with `note`
+recording how.
+
+### Getting from a name to a path (use metacat, don't guess)
+
+These tables hold *names*. The metacat MCP turns a name into a path, and the
+two servers divide the work cleanly: **resolve run → file here, name → path
+there.**
+
+A production DQM file name follows the Mu2e convention
+`tier.owner.description.configuration.sequencer.format`, so dropping the
+sequencer gives the dataset it belongs to:
+
+```
+dqm.mu2e.cosmics_crv.crvreco-006-001-file.125873_000636-001.root   ← from dqm.files
+mu2e:dqm.mu2e.cosmics_crv.crvreco-006-001-file.root                ← its dataset DID
+```
+
+Then `query_dataset_files(dataset_did=..., include_url=true)` and **let metacat
+resolve the location** — omit `location=`, and don't assemble a `/pnfs` path by
+hand. Probed, that dataset's files come back on disk:
+
+```
+url_info: {location: "disk", location_source: "probed"}
+/pnfs/mu2e/persistent/datasets/phy-ntd/dqm/mu2e/cosmics_crv/...
+```
+
+Disk is where these normally live, which is worth knowing — a disk replica
+avoids a tape stage. But it is a fact to confirm per dataset, not an assumption
+to build a path on: metacat probes disk first and falls back, and when it has
+nothing to probe it *defaults to tape and says so* in `url_info.location_source`
+and a warning. An agent that presumes disk and constructs the path itself
+produces something plausible and wrong once a file has aged to tape.
+
+Two caveats found while checking this:
+
+- **Metacat's run filters do not work on DQM datasets.** These files carry
+  `fn.*`/`dh.*`/`app.*` metadata but no `metadata.rs.first_run`, so
+  `run_min`/`run_max` match nothing — which is exactly why `dqm.files` exists.
+  Go from a run to a file name here, then look that name up there.
+- **A hand-made golden file may be in no catalog at all.** Golden names are
+  committed from wherever the declaration was made, often somewhere the file
+  is not visible, so a metacat miss on one means "not catalogued", not "wrong
+  name".
 
 ### Truncation and totals
 
