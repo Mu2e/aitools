@@ -23,7 +23,8 @@ already produces everything needed to run it:
 
   <...>/.venv/bin/ecl-mcp                     (python entry point)
   <...>/.venv/bin/ecl-mcp.sh                   (bash wrapper -- server-side
-                                                 setup hook, execs ecl-mcp;
+                                                 setup hook, execs
+                                                 `python -m ecl_mcp.server`;
                                                  currently a no-op passthrough)
   <...>/.venv/bin/ecl-mcp-install-unit.sh      (renders + links the systemd
                                                  --user unit; see below)
