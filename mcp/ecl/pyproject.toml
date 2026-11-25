@@ -15,7 +15,13 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "mcp>=2.0.0",
-  "ecl-api @ git+https://github.com/Mu2e/ecl-api",
+  # Pinned to a tag, not left to float on ecl-api's default branch. Unpinned,
+  # a tagged release of this package was not reproducible -- reinstalling the
+  # same ecl-mcp tag could pull a different ecl-api -- and that is how
+  # ecl-api's `ecl-mcp` console-script alias reached a deployed release
+  # unannounced, clobbering bin/ecl-mcp (see scripts/ecl-mcp.sh). Bump this
+  # deliberately; ecl-api versions off its own git tags via hatch-vcs.
+  "ecl-api @ git+https://github.com/Mu2e/ecl-api@v1.0.0",
   "mikey @ git+https://github.com/Mu2e/aitools#subdirectory=mcp/mikey",
 ]
 
