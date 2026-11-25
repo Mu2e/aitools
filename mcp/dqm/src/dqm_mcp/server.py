@@ -17,6 +17,7 @@ which reduce the data in pandas and return the shape rather than the rows.
 from __future__ import annotations
 
 import argparse
+import functools
 import importlib.metadata
 import logging
 import os
@@ -24,6 +25,7 @@ import sys
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 LOGGER = logging.getLogger("dqm_mcp")
 
@@ -213,6 +215,38 @@ def _reader():
     return reader
 
 
+def _wrap(fn):
+    """Turn an exception into a ToolError carrying a readable message.
+
+    Without this the SDK reports any non-ToolError exception to the caller as
+    a bare "Error executing tool <name>" and keeps the text to itself, so
+    every guard in this module -- "a source is required", "11 sources match:
+    sids [...]", "bump the mu2e-dqm pin" -- arrived as that one useless
+    sentence. The messages are the whole point of those guards: they tell an
+    agent what to pass instead. ToolError is the SDK's channel for an
+    anticipated failure and its message does reach the caller, which is why
+    memory-mcp and agentlog-mcp both do this.
+
+    ValueError is the bad-argument case and is reported as such. Anything
+    else is logged here with a traceback, since the caller gets only one
+    line and an unanticipated failure is worth having server-side.
+    """
+
+    @functools.wraps(fn)
+    def inner(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except ToolError:
+            raise
+        except ValueError as e:
+            raise ToolError(f"bad_request: {e}") from e
+        except Exception as e:  # noqa: BLE001 -- deliberately broad, see docstring
+            LOGGER.exception("dqm-mcp tool %s failed", fn.__name__)
+            raise ToolError(f"tool_failed: {type(e).__name__}: {e}") from e
+
+    return inner
+
+
 def _clamp_limit(limit: int) -> int:
     if limit <= 0:
         raise ValueError("limit must be > 0")
@@ -236,6 +270,7 @@ def _page(df, limit: int, offset: int):
 
 
 @mcp.tool(description="Get DQM MCP configuration and defaults.")
+@_wrap
 def get_server_info() -> dict[str, Any]:
     reader = _reader()
     return {
@@ -268,6 +303,7 @@ def get_server_info() -> dict[str, Any]:
         "used to scope list_intervals and query_metrics to one source."
     )
 )
+@_wrap
 def list_sources(
     process: str | None = None,
     stream: str | None = None,
@@ -309,6 +345,7 @@ def list_sources(
         "reported for a given process/stream before narrowing list_sources/query_metrics."
     )
 )
+@_wrap
 def list_versions(
     process: str | None = None,
     stream: str | None = None,
@@ -337,6 +374,7 @@ def list_versions(
         "metric you already know the name of, or to browse what's trackable at all."
     )
 )
+@_wrap
 def list_values(
     groupx: str | None = None,
     subgroup: str | None = None,
@@ -373,6 +411,7 @@ def list_values(
         "scope to one source -- unscoped, this lists intervals across all sources."
     )
 )
+@_wrap
 def list_intervals(
     sid: int | None = None,
     run: int | None = None,
@@ -435,6 +474,7 @@ def list_intervals(
         "bin's mean, min and max, so excursions survive the reduction)."
     )
 )
+@_wrap
 def query_metrics(
     metric_table: str = "numbers",
     sid: int | None = None,
@@ -721,6 +761,7 @@ def _decode_source(reader, df):
         "name -> path there."
     )
 )
+@_wrap
 def list_files(
     sid: int | None = None,
     iid: int | None = None,
@@ -904,6 +945,7 @@ def list_files(
         "catalogued', not 'wrong name'."
     )
 )
+@_wrap
 def get_golden_file(
     sid: int | None = None,
     process: str | None = None,
@@ -1015,6 +1057,7 @@ def get_golden_file(
         "hand-made reference was built."
     )
 )
+@_wrap
 def list_golden(
     sid: int | None = None,
     process: str | None = None,
@@ -1088,6 +1131,7 @@ def list_golden(
         "readable; use list_sources to go the other way."
     )
 )
+@_wrap
 def list_alarms(
     sid: int | None = None,
     algo: str | None = None,
@@ -1191,6 +1235,7 @@ def list_alarms(
         "list_alarms first to find the aid."
     )
 )
+@_wrap
 def get_alarm_causes(
     aid: int,
     limit: int = DEFAULT_LIMIT,
