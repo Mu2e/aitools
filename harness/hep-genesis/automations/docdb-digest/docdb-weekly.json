@@ -1,0 +1,24 @@
+{
+  "trigger": {
+    "type": "time",
+    "at": "08:00",
+    "days": [
+      "mon"
+    ]
+  },
+  "action": {
+    "servers": [
+      "kb",
+      "ecl",
+      "runs",
+      "dqm",
+      "slack-digest"
+    ],
+    "budget": {
+      "minutes": 45,
+      "tool_calls": 150,
+      "tokens": 3000000
+    },
+    "prompt": "Write the Mu2e weekly digest for the week that ended yesterday (Monday to Sunday; today is {date}), a post for a Slack channel.\n\nThe digest tells people what happened in Mu2e last week and what is coming. It is for every Mu2e collaborator, including those who do not work on the subsystem in question. It has a different job than the daily digests: not what was posted, but where things stand. Follow a topic through the week, say what changed, what was decided and what is still open.\n\nSources:\n- The daily digests of last week in the Slack channel mu2e-ai-test (posts that start with \"Summary from yesterday\"). Read them first with the Slack read tools; they are a starting point, not the content. There may be few or none.\n- DocDB: the documents added or updated last week, with the kb tools (search_filter on source_id mu2e-docdb, with a range on insert_time and update_time over the seven days). Read enough of them to see what they are about. This is the main source, and the only one for the days without a daily digest.\n- The logbook (ecl) for activity at MC-2 during the week: problems, milestones, changes.\n- The runs and the data quality (dqm) of the week.\n\"Last week\" means the calendar days in Chicago; the tools give times in UTC. Where you mention when something happens, give the date (\"Nov 24\"), not only a weekday.\n\nWhat to write, in one concise post:\n- The three to five most important topics of the week (for example tracker, calorimeter, CRV, DAQ, computing, physics, operations), the most important first: one or two sentences each on what happened and where it stands now. Leave out everything else. You need not mention every document.\n- Put the links into the sentences: name a document where you refer to it and link it to its DocDB page, https://mu2e-docdb.fnal.gov/cgi-bin/sso/ShowDocument?docid=NUMBER with its DocDB number; a logbook entry to https://dbweb0.fnal.gov/ECL/mu2e/E/show?e=NUMBER with its entry number.\n- Where a topic needs background to make sense to someone outside that group (what a component or a test is, why a number matters, what an abbreviation that is not common Mu2e vocabulary stands for), look it up with the kb tools, in DocDB and the wiki, and work a few words of it into the sentence.\n- One sentence on data taking and data quality over the week.\n- A last line \"This week:\" with what the sources say is coming in the week that starts today: meetings, deadlines, planned interventions or tests, and things that were announced or left open last week. Only what the sources say; leave the line out if there is nothing.\n\nWrite it the way a colleague would post in Slack, not as a report: the first line is \"Summary of last week, \" followed by the dates of the Monday and the Sunday (for example \"Summary of last week, Nov 16 to Nov 22\"), in bold. After that no introduction and no closing remark: go directly to the first topic. One short paragraph per topic, with the topic in bold; plain, informal wording. Format it for fast scanning: a reader should get through it in about 30 seconds. Write Markdown and stay below 250 words in all; links do not count.\n\nThen post it, exactly as written, to the Slack channel mu2e-ai-test with slack_post_message. Post it once. If the post is refused, say so in your answer and do not try again.\n\nAfter that, and only if there is more that a collaborator would really want to read, add it as replies in the thread of that post: call slack_post_message again with thread_ts set to the ts the first call returned. One reply per topic, with the topic in bold as its first words, below 150 words, with the same rules for links and wording; at most three replies. A reply gives what did not fit into the post (the numbers, the open questions, the documents to read), not the same text in more words. Most weeks need one or two replies, a quiet week none: if in doubt, do not add one."
+  }
+}
