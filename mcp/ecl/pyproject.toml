@@ -19,6 +19,9 @@ dependencies = [
   "mikey @ git+https://github.com/Mu2e/aitools#subdirectory=mcp/mikey",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest"]
+
 [project.scripts]
 ecl-mcp = "ecl_mcp.server:main"
 

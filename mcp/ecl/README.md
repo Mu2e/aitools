@@ -29,6 +29,10 @@ Read-only (always registered): `get_server_info`, `ecl_search_entries`,
 `ecl_search_entry_ids`, `ecl_get_entry`, `ecl_list_categories`,
 `ecl_list_tags`, `ecl_list_forms`.
 
+Every entry returned carries `url`, its page in the logbook's web interface
+(`<ECL_URL>/show?e=<id>`), so an agent can link an entry instead of quoting
+its number.
+
 `ecl_post_entry` is additionally registered when `ECL_MCP_READ_ONLY=false`.
 It takes `do_post` (default `False`) so an agent can prepare and inspect an
 entry before committing it -- there is no undo once `do_post=True` is used.
@@ -37,7 +41,7 @@ entry before committing it -- there is no undo once `do_post=True` is used.
 
 | Variable             | Default       | Purpose                                        |
 |----------------------|---------------|-------------------------------------------------|
-| `ECL_URL`            | _(required)_  | ECL base URL, e.g. `https://dbweb9.fnal.gov:8443/ECL/mu2e/E` |
+| `ECL_URL`            | _(required)_  | ECL base URL, e.g. `https://dbweb0.fnal.gov/ECL/mu2e/E` (the address that passes on to a server that is up; a `dbwebN:8443` one is a single server) |
 | `ECL_USER_NAME`      | _(required)_  | XML user name                                  |
 | `ECL_PASSWORD`       | _(required)_  | XML user password                              |
 | `ECL_MCP_READ_ONLY`  | `true`        | Set to `false` to register `ecl_post_entry`    |
