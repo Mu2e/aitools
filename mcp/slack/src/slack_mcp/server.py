@@ -7,10 +7,17 @@ that can read those channels can answer "what did the shifters report
 overnight?" or put a log error into context.
 
 What it deliberately is not: a Slack client. Three read tools, nothing that
-posts, reacts, searches the workspace or lists channels beyond the ones an
+reacts, searches the workspace or lists channels beyond the ones an
 operator put in ``SLACK_MCP_CHANNELS``. Channels outside the allowlist do
 not exist as far as a caller is concerned -- they are neither listed nor
 readable by id.
+
+Posting is off unless an operator names channels in
+``SLACK_MCP_POST_CHANNELS``: only then is a fourth tool,
+``slack_post_message``, offered, and only for those channels. It is meant
+for a stdio copy started by one application (a digest automation), with
+that application's own lists. Nothing here edits or deletes; an operator
+removes a post with ``slack-mcp --delete <permalink>``.
 
 Transport: streamable-HTTP like every ``mcp/*`` server here (``slack-mcp``),
 plus stdio (``slack-mcp-stdio``) so a local agent such as daqpy can spawn
@@ -19,14 +26,16 @@ set (HTTP only; stdio is already local).
 
 Slack app scopes needed by the bot token: ``channels:history``,
 ``channels:read``, ``users:read``; for private channels also
-``groups:history`` and ``groups:read``. The bot must be a member of each
-allowlisted channel.
+``groups:history`` and ``groups:read``; for posting ``chat:write``. The bot
+must be a member of each allowlisted channel.
 """
 
 from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
+import json
 import logging
 import os
 import re
@@ -34,13 +43,16 @@ import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
+from pydantic import Field
 from mikey import build_auth_kwargs
 
 from . import version as _version
+from .mrkdwn import chunks, to_mrkdwn
 
 LOGGER = logging.getLogger("slack_mcp")
 
@@ -48,6 +60,10 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8009
 MAX_MESSAGES = int(os.environ.get("SLACK_MCP_MAX_MESSAGES", "500"))
 PAGE = 200  # Slack's conversations.history page size
+POST_MAX_CHARS = int(os.environ.get("SLACK_MCP_POST_MAX_CHARS", "12000"))
+POST_PER_HOUR = int(os.environ.get("SLACK_MCP_POST_PER_HOUR", "5"))
+POST_FOOTER = "_AI-generated; may contain mistakes._"
+DRY_RUN_TS = "0.000000"  # what a dry run returns as the ts of its post
 
 INSTRUCTIONS = (
     "Read-only access to a fixed, operator-chosen set of Mu2e Slack channels "
@@ -58,12 +74,19 @@ INSTRUCTIONS = (
     "of them (default last 24h, newest last), slack_read_thread for the "
     "replies under a message. Messages carry an ISO time, the author's name, "
     "the text with @mentions resolved, a reply count and a permalink. "
-    "Nothing here can post or search."
+    "Nothing here can search."
+)
+POST_INSTRUCTIONS = (
+    "\n\nThis copy can also post: slack_post_message writes one message to "
+    "one of the channels named in its description, and to no other. Write "
+    "normal Markdown. A post is visible to everyone in the channel and you "
+    "cannot edit or remove it: post only what you were asked to post, once."
 )
 
 # Constructed at import time so @mcp.tool() registers before main() runs;
 # build_auth_kwargs() reads MIKEY_KEYS_FILE and returns {} (auth off) if unset.
-mcp = MCPServer("slack", instructions=INSTRUCTIONS, **build_auth_kwargs())
+mcp = MCPServer("slack", **build_auth_kwargs(), instructions=INSTRUCTIONS + (
+    POST_INSTRUCTIONS if os.environ.get("SLACK_MCP_POST_CHANNELS", "").strip() else ""))
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +95,17 @@ mcp = MCPServer("slack", instructions=INSTRUCTIONS, **build_auth_kwargs())
 
 def allowlist() -> list[str]:
     """Channel names (without #) or ids from SLACK_MCP_CHANNELS."""
-    raw = os.environ.get("SLACK_MCP_CHANNELS", "")
+    return _names("SLACK_MCP_CHANNELS")
+
+
+def post_allowlist() -> list[str]:
+    """The channels that can be posted to, from SLACK_MCP_POST_CHANNELS.
+    Empty (the default): nothing can be posted and the tool is not offered."""
+    return _names("SLACK_MCP_POST_CHANNELS")
+
+
+def _names(variable: str) -> list[str]:
+    raw = os.environ.get(variable, "")
     return [c.strip().lstrip("#") for c in re.split(r"[,\s]+", raw) if c.strip()]
 
 
@@ -106,6 +139,17 @@ def parse_span(spec: str) -> float:
 
 def ts_to_iso(ts: str | float) -> str:
     return datetime.fromtimestamp(float(ts), tz=timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+_PERMALINK = re.compile(r"/archives/([A-Z0-9]+)/p(\d{7,})(?:[?#].*)?$")
+
+
+def parse_permalink(link: str) -> tuple[str, str]:
+    """A message's link ("Copy link" in Slack) -> (channel id, ts)."""
+    m = _PERMALINK.search((link or "").strip())
+    if not m:
+        raise ValueError(f"not a link to a Slack message: {link!r}")
+    return m.group(1), f"{m.group(2)[:-6]}.{m.group(2)[-6:]}"
 
 
 def permalink(team_url: str, channel_id: str, ts: str, thread_ts: str | None = None) -> str:
@@ -148,6 +192,9 @@ class SlackReader:
         self._lock = threading.Lock()
         self._users: dict[str, str] = {}
         self._channels: list[dict[str, Any]] | None = None
+        self._post_channels: list[dict[str, Any]] | None = None
+        self._posted: list[float] = []
+        self._posted_texts: dict[str, float] = {}
         self._team_url = ""
         self._bot_user = ""
 
@@ -167,13 +214,14 @@ class SlackReader:
 
     # -- channels -----------------------------------------------------------
 
-    def channels(self, refresh: bool = False) -> list[dict[str, Any]]:
-        """Resolve the allowlist to channel records; cached."""
+    def channels(self, refresh: bool = False, post: bool = False) -> list[dict[str, Any]]:
+        """Resolve the allowlist (``post``: the one for posting) to channel records; cached."""
         with self._lock:
-            if self._channels is not None and not refresh:
-                return self._channels
-            wanted = allowlist()
-            if not wanted:
+            cached = self._post_channels if post else self._channels
+            if cached is not None and not refresh:
+                return cached
+            wanted = post_allowlist() if post else allowlist()
+            if not wanted and not post and not post_allowlist():
                 raise ValueError("SLACK_MCP_CHANNELS is empty -- no channel is readable")
             by_name: dict[str, dict[str, Any]] = {}
             names_wanted = [w for w in wanted if not re.fullmatch(r"[CG][A-Z0-9]{8,}", w)]
@@ -187,7 +235,10 @@ class SlackReader:
                     out.append(self._describe(by_name[w]))
                 else:
                     out.append({"id": None, "name": w, "error": "not found (not a member, or missing groups:read for a private channel)"})
-            self._channels = out
+            if post:
+                self._post_channels = out
+            else:
+                self._channels = out
             return out
 
     def _list_channels_by_name(self) -> dict[str, dict[str, Any]]:
@@ -220,13 +271,15 @@ class SlackReader:
             "members": ch.get("num_members"),
         }
 
-    def resolve(self, channel: str) -> dict[str, Any]:
+    def resolve(self, channel: str, post: bool = False) -> dict[str, Any]:
         """Allowlisted channel by name or id, else ValueError (never leaks other channels)."""
         key = (channel or "").strip().lstrip("#")
-        for ch in self.channels():
+        for ch in self.channels(post=post):
             if ch.get("id") and (key == ch["id"] or key == ch.get("name")):
                 return ch
-        names = ", ".join(f"#{c.get('name')} ({c['id']})" for c in self.channels() if c.get("id"))
+        names = ", ".join(f"#{c.get('name')} ({c['id']})" for c in self.channels(post=post) if c.get("id"))
+        if post:
+            raise ValueError(f"#{key} cannot be posted to here; this server posts only to: {names or '(none)'}")
         # Name the refused channel when it is an id of a public channel, so the
         # caller can report "#mu2e-shift" rather than an opaque id.
         label = f"#{key}"
@@ -296,12 +349,41 @@ class SlackReader:
             return method(**kwargs)
         except Exception as exc:  # noqa: BLE001
             err = _slack_error(exc)
-            name = next((f"#{c.get('name')}" for c in (self._channels or []) if c.get("id") == channel_id), channel_id)
+            name = next((f"#{c.get('name')}" for c in (self._channels or []) + (self._post_channels or [])
+                         if c.get("id") == channel_id), channel_id)
             if err.startswith("not_in_channel"):
-                raise ValueError(f"the bot is not a member of {name}; an admin must invite it (/invite) before it can be read") from exc
+                raise ValueError(f"the bot is not a member of {name}; an admin must invite it (/invite) first") from exc
             if err.startswith("missing_scope"):
                 raise ValueError(f"the Slack app lacks a scope for {name}: {err}") from exc
             raise
+
+    # -- posting ------------------------------------------------------------
+
+    def post(self, channel_id: str, pieces: list[str], thread_ts: str | None = None, digest: str = "") -> list[str]:
+        """Post the pieces in order; the ts of each. At most POST_PER_HOUR
+        calls an hour per process, so a caller in a loop cannot flood a
+        channel, and not a text (``digest``, its hash) that went to the same
+        channel within the hour: a retry after a timeout must not post twice."""
+        now = time.time()
+        with self._lock:
+            self._posted = [t for t in self._posted if now - t < 3600]
+            self._posted_texts = {d: t for d, t in self._posted_texts.items() if now - t < 3600}
+            if digest and (digest in self._posted_texts or _in_post_log(digest, now)):
+                raise ValueError("this text was already posted to this channel within the last hour; "
+                                 "it is there, do not post it again")
+            if len(self._posted) >= POST_PER_HOUR:
+                raise ValueError(f"this server posts at most {POST_PER_HOUR} messages an hour, and that many "
+                                 "have been posted; do not try again")
+            self._posted.append(now)
+            if digest:
+                self._posted_texts[digest] = now
+        out = []
+        for piece in pieces:
+            # Previews are off: Slack fetches no address that ends up in a post.
+            resp = self._call(self.client.chat_postMessage, channel_id, channel=channel_id, text=piece,
+                              thread_ts=thread_ts, link_names=False, unfurl_links=False, unfurl_media=False)
+            out.append(resp["ts"])
+        return out
 
     def format(self, msg: dict[str, Any], channel_id: str) -> dict[str, Any]:
         ts = msg.get("ts", "")
@@ -379,8 +461,9 @@ def get_server_info() -> dict[str, Any]:
         "name": "slack",
         "version": _version(),
         "transport": "streamable-http",
-        "read_only": True,
+        "read_only": not post_allowlist(),
         "channels": allowlist(),
+        "post_channels": post_allowlist(),
         "max_messages": MAX_MESSAGES,
         "auth": "mikey" if mcp.settings.auth else "disabled",
     }
@@ -391,8 +474,18 @@ def get_server_info() -> dict[str, Any]:
 def list_channels(refresh: bool = False) -> list[dict[str, Any]]:
     """The Slack channels readable through this server (an operator-set allowlist),
     with id, name, privacy, topic, purpose and member count. Nothing else is
-    readable. ``refresh=True`` re-resolves names (e.g. after the bot was invited)."""
-    return get_reader().channels(refresh=refresh)
+    readable. ``refresh=True`` re-resolves names (e.g. after the bot was invited).
+    Where posting is switched on, ``post`` says which channels take a post."""
+    r = get_reader()
+    rows = [dict(c) for c in r.channels(refresh=refresh)]
+    if post_allowlist():
+        can = r.channels(refresh=refresh, post=True)
+        ids = {c.get("id") for c in can}
+        for row in rows:
+            row["post"] = row.get("id") in ids
+        seen = {row.get("id") for row in rows}
+        rows += [{**c, "read": False, "post": True} for c in can if c.get("id") not in seen]
+    return rows
 
 
 @mcp.tool(name="slack_read_channel")
@@ -444,6 +537,102 @@ def read_thread(channel: str, thread_ts: str, limit: int = 200) -> dict[str, Any
             "count": len(raw), "messages": [r.format(m, ch["id"]) for m in raw]}
 
 
+def _in_post_log(digest: str, now: float) -> bool:
+    """Whether $SLACK_MCP_POST_LOG has this text's hash from the last hour.
+    Over stdio a retry is often a new process: the file is what it shares
+    with the one before."""
+    log = os.environ.get("SLACK_MCP_POST_LOG", "").strip()
+    if not log:
+        return False
+    try:
+        with open(log) as fh:
+            lines = fh.readlines()[-200:]
+    except OSError:
+        return False
+    for line in lines:
+        try:
+            row = json.loads(line)
+            if row.get("sha256") == digest and now - float(row.get("epoch", 0)) < 3600:
+                return True
+        except (ValueError, TypeError, AttributeError):
+            pass
+    return False
+
+
+def post_message(channel: str, text: str, thread_ts: str | None = None) -> dict[str, Any]:
+    r = get_reader()
+    ch = r.resolve(channel, post=True)
+    if not (text or "").strip():
+        raise ValueError("text is empty")
+    if len(text) > POST_MAX_CHARS:
+        raise ValueError(f"text has {len(text)} characters; at most {POST_MAX_CHARS} can be posted. Shorten it.")
+    if thread_ts is not None and not re.fullmatch(r"\d+\.\d+", str(thread_ts)):
+        raise ValueError("thread_ts is the ts of a message, like 1791227465.254249")
+    # The operator's line under every post (Markdown; set but empty: none).
+    footer = os.environ.get("SLACK_MCP_POST_FOOTER", POST_FOOTER).strip()
+    pieces = chunks(to_mrkdwn(text.rstrip() + (f"\n\n{footer}" if footer else "")))
+    where = {"id": ch["id"], "name": ch.get("name")}
+    if os.environ.get("SLACK_MCP_POST_DRY_RUN", "").strip().lower() in ("1", "true", "yes"):
+        # A ts that can be given back as thread_ts, so that a post with
+        # replies can be tried as a whole.
+        return {"channel": where, "posted": False, "dry_run": True, "ts": DRY_RUN_TS, "messages": pieces,
+                "note": "Dry run: this server is set to post nothing, and the text was accepted as it "
+                        "would be posted. This is not a refusal: carry on as if it had been posted."}
+    digest = hashlib.sha256(f"{ch['id']}\n{thread_ts or ''}\n{text.strip()}".encode()).hexdigest()
+    stamps = r.post(ch["id"], pieces, thread_ts, digest)
+    links = [permalink(r.team_url, ch["id"], ts, thread_ts) for ts in stamps]
+    # What was posted where, for whoever has to find (and remove) it later;
+    # never the text.
+    record = {"time": ts_to_iso(time.time()), "epoch": int(time.time()), "channel": ch.get("name"),
+              "channel_id": ch["id"], "characters": len(text), "sha256": digest, "permalinks": links}
+    LOGGER.warning("posted to #%s: %d characters, %s", ch.get("name"), len(text), " ".join(links))
+    log = os.environ.get("SLACK_MCP_POST_LOG", "").strip()
+    if log:
+        try:
+            with open(log, "a") as fh:
+                fh.write(json.dumps(record) + "\n")
+        except OSError as exc:
+            LOGGER.warning("could not write %s: %s", log, exc)
+    return {"channel": where, "posted": True, "ts": stamps[0], "messages": len(links), "permalinks": links}
+
+
+def _register_post() -> bool:
+    """Offer slack_post_message, when an operator named channels to post to.
+    The channels are the only values the schema allows for ``channel``."""
+    names = post_allowlist()
+    if not names:
+        return False
+    run = _wrap(post_message)
+
+    def slack_post_message(channel, text, thread_ts=None):
+        return run(channel, text, thread_ts)
+
+    slack_post_message.__annotations__ = {
+        "channel": Annotated[Literal[tuple(names)], Field(description="The channel to post to.")],
+        "text": Annotated[str, Field(description=(
+            "The message, as normal Markdown (bold, lists, [text](url) links, code blocks). "
+            f"At most {POST_MAX_CHARS} characters; a long one is split into several messages."))],
+        "thread_ts": Annotated[str | None, Field(description=(
+            "To reply in a thread: the ts of its first message (the ts this tool returned for it). "
+            "Leave out for a new message."))],
+        "return": dict[str, Any],
+    }
+    mcp.tool(
+        name="slack_post_message", title="Post to Slack",
+        description=("Post a message to a Slack channel; returns its permalink and ts. Visible to everyone in the "
+                     "channel, and it cannot be edited or removed from here: post only what you were asked "
+                     "to, once. Nobody is notified (@channel and @name stay plain text). At most "
+                     f"{POST_PER_HOUR} posts an hour; the same text is not posted twice. A line saying "
+                     "the post is AI-generated is added for you: do not write one."),
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False,
+                                    openWorldHint=True),
+    )(slack_post_message)
+    return True
+
+
+_register_post()
+
+
 # ---------------------------------------------------------------------------
 # entry points
 # ---------------------------------------------------------------------------
@@ -457,8 +646,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--transport", choices=("streamable-http", "stdio"), default="streamable-http",
                         help="stdio for a local agent spawning this as a subprocess (default: %(default)s)")
     parser.add_argument("--check", action="store_true",
-                        help="verify SLACK_BOT_TOKEN (auth.test) and resolve SLACK_MCP_CHANNELS, print, exit. "
+                        help="verify SLACK_BOT_TOKEN (auth.test) and resolve SLACK_MCP_CHANNELS and "
+                             "SLACK_MCP_POST_CHANNELS, print, exit. "
                              "Makes live Slack API calls; reads no messages.")
+    parser.add_argument("--delete", metavar="PERMALINK", nargs="+",
+                        help="delete messages this bot posted, by their link ('Copy link' in Slack), and exit. "
+                             "Needs only SLACK_BOT_TOKEN; Slack refuses any message that is not the bot's own.")
     return parser.parse_args(argv)
 
 
@@ -471,19 +664,45 @@ def _check() -> int:
         return 1
     print(f"slack-mcp {_version()}  auth={'mikey' if mcp.settings.auth else 'disabled'}")
     print(f"Slack: {who['user']} ({who['user_id']}) in {who['team']}  {who['url']}")
-    chans = allowlist()
-    if not chans:
+    if not allowlist() and not post_allowlist():
         print("FAILED: SLACK_MCP_CHANNELS is empty", file=sys.stderr)
         return 1
     ok = True
-    for ch in r.channels():
-        if ch.get("id"):
-            print(f"  #{ch.get('name')} ({ch['id']}){' private' if ch.get('is_private') else ''}"
-                  f"{'  ' + ch['note'] if ch.get('note') else ''}")
-        else:
-            ok = False
-            print(f"  {ch['name']}: {ch.get('error')}")
+    for post in (False, True):
+        chans = r.channels(post=post)
+        if post:
+            print(f"posting: {'to' if chans else 'off (SLACK_MCP_POST_CHANNELS is empty)'}")
+        for ch in chans:
+            if ch.get("id"):
+                print(f"  #{ch.get('name')} ({ch['id']}){' private' if ch.get('is_private') else ''}"
+                      f"{'  ' + ch['note'] if ch.get('note') else ''}")
+            else:
+                ok = False
+                print(f"  {ch['name']}: {ch.get('error')}")
     return 0 if ok else 1
+
+
+def _delete(links: list[str]) -> int:
+    """``--delete``: an operator removes posts. Not a tool: no caller of the
+    server can do this."""
+    try:
+        r = get_reader()
+    except Exception as exc:  # noqa: BLE001
+        print(f"FAILED: {_slack_error(exc)}", file=sys.stderr)
+        return 1
+    failed = 0
+    for link in links:
+        try:
+            channel, ts = parse_permalink(link)
+            r.client.chat_delete(channel=channel, ts=ts)
+            print(f"deleted  {link}")
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            err = _slack_error(exc)
+            hint = {"cant_delete_message": " (not a message of this bot; a workspace admin can delete it in Slack)",
+                    "message_not_found": " (already deleted, or not a message link)"}.get(err.split(" ")[0], "")
+            print(f"FAILED   {link}: {err}{hint}", file=sys.stderr)
+    return 1 if failed else 0
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -492,11 +711,20 @@ def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     if args.check:
         sys.exit(_check())
+    if args.delete:
+        sys.exit(_delete(args.delete))
     if args.transport == "stdio":
         mcp.run(transport="stdio")
         return
-    LOGGER.info("Starting slack MCP server over streamable-http on %s:%s (channels=%s, auth=%s)",
-                args.host, args.port, ",".join(allowlist()) or "-", "mikey" if mcp.settings.auth else "disabled")
+    if post_allowlist():
+        # Over HTTP every holder of a key would get the post tool. Posting is
+        # for a stdio copy that one application starts with its own lists.
+        print("slack-mcp: SLACK_MCP_POST_CHANNELS is set; posting is offered over stdio only "
+              "(--transport stdio). Unset it for the HTTP server.", file=sys.stderr)
+        sys.exit(2)
+    LOGGER.info("Starting slack MCP server over streamable-http on %s:%s (channels=%s, post=%s, auth=%s)",
+                args.host, args.port, ",".join(allowlist()) or "-", ",".join(post_allowlist()) or "off",
+                "mikey" if mcp.settings.auth else "disabled")
     mcp.run(transport="streamable-http", host=args.host, port=args.port)
 
 
