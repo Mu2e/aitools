@@ -169,3 +169,5 @@ checkout's code: backend edits count at the next start, the web UI after
 
 The pinned commit, installing for a service account, the `mu2eai`
 automations service and its web UI: [SERVICE.md](SERVICE.md).
+The desktop app on a laptop, with the Mu2e servers over VPN or ssh:
+[desktop/README.md](desktop/README.md).
