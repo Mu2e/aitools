@@ -67,6 +67,12 @@ git -C "$dest" checkout --quiet --detach "$ref" 2>/dev/null || git -C "$dest" ch
 echo "hep-genesis-agent at $(git -C "$dest" rev-parse --short HEAD) in $dest"
 
 (cd "$dest/desktop" && npm install --no-audit --no-fund)
+# An npm that holds back packages' install scripts leaves Electron without
+# its program ("Electron uninstall" at the start): run that one step here.
+if [[ ! -f "$dest/desktop/node_modules/electron/path.txt" ]]; then
+  echo "downloading Electron"
+  (cd "$dest/desktop" && node node_modules/electron/install.js)
+fi
 
 [[ -f "$dest/desktop/src/main/startHook.ts" ]] || {
   echo "ERROR: this version of the app has no start hook; install a newer one with --ref" >&2; exit 1; }
