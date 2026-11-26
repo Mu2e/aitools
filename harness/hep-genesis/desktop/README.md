@@ -32,6 +32,16 @@ newer, python3, and ssh set up for Fermilab. macOS or Linux.
 - **the site's model endpoint** from `site/env.template`, added once. It
   needs the Fermilab network; other models are added in the Models panel.
 - **the site's context** (`site/context.md`): which tool answers what.
+- **the model presets**: the Models panel offers the Mu2e ones from
+  `site/models.json` (Fermilab LiteLLM, ALCF inference) and the laptop's
+  additions from `desktop/models.json` (NRP, AmSC-MAG), not the app's stock
+  list, and has no ChatGPT section, as in the web UI. On a first start the
+  app's stock endpoints are not added. Endpoints already in the app are not
+  removed: delete those you do not want in the Models panel.
+
+The Fermilab model addresses (vLLM, LiteLLM) are https and are not
+forwarded by `--mode ssh`: away from the Fermilab network they work only if
+the lab serves them to the outside.
 
 In the Servers panel these servers are marked "site": they can be switched
 off, not edited.

@@ -1,0 +1,19 @@
+{
+  "_comment": "Model presets the desktop app offers at Mu2e in addition to ../site/models.json (the web UI's list on the gpvms): gateways a laptop can reach that the gpvm install does not offer. Same format as that file's presets. connect.py appends them; a preset whose baseUrl is already in the site's list is left out.",
+  "presets": [
+    {
+      "name": "NRP (National Research Platform)",
+      "baseUrl": "https://ellm.nrp-nautilus.io/v1",
+      "model": "glm-5",
+      "keyUrl": "",
+      "note": "Open models (glm-5, gpt-oss, qwen3, gemma, kimi, deepseek) served by the NRP; needs an NRP API key."
+    },
+    {
+      "name": "AmSC-MAG",
+      "baseUrl": "https://mag.genesis.americansciencecloud.org/v1/",
+      "model": "claude-opus-5-5-high-compact@google",
+      "keyUrl": "",
+      "note": "American Science Cloud model gateway (Genesis); needs an AmSC-MAG API key."
+    }
+  ]
+}

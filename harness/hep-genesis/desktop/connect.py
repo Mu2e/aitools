@@ -200,6 +200,25 @@ def site_endpoint(env_template: Path) -> list[dict]:
              "apiKey": values.get("LLM_API_KEY", "")}]
 
 
+def site_presets(site: Path, extra: Path) -> dict:
+    """The Models panel's presets and whether it offers ChatGPT: the file the
+    web UI reads on the gpvms, then the desktop's own additions. {} when
+    there is neither."""
+    out, seen = {}, set()
+    for path in (site, extra):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for p in data.get("presets") or []:
+            if isinstance(p, dict) and p.get("baseUrl") and p["baseUrl"] not in seen:
+                seen.add(p["baseUrl"])
+                out.setdefault("presets", []).append(p)
+        if isinstance(data.get("chatgpt"), bool) and "chatgpt" not in out:
+            out["chatgpt"] = data["chatgpt"]
+    return out
+
+
 def site_context(path: Path, connected: set[str]) -> str:
     """context.md as the agent reads it on the gpvms: comments dropped, a
     section headed "## Title [kb, dqm]" kept only with one of those servers."""
@@ -222,7 +241,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Start hook of the hep-genesis desktop app at Mu2e.")
     ap.add_argument("--mode", choices=("local", "ssh"), default="local")
     ap.add_argument("--ssh-host", default=os.environ.get("MU2E_SSH_HOST", "mu2egpvm01.fnal.gov"))
-    ap.add_argument("--site", type=Path, default=SITE, help="folder with servers.json, env.template, context.md")
+    ap.add_argument("--site", type=Path, default=SITE, help="folder with servers.json, env.template, models.json, context.md")
     ap.add_argument("--stop", action="store_true", help="end the ssh connection of --mode ssh")
     ap.add_argument("--check", action="store_true", help="print the result without the token")
     args = ap.parse_args()
@@ -258,7 +277,8 @@ def main() -> int:
             if needs_token:
                 servers[name]["headers"] = {"Authorization": "Bearer " + ("<token>" if args.check else token)}
         result = {"servers": servers, "endpoints": site_endpoint(args.site / "env.template"),
-                  "context": site_context(args.site / "context.md", set(servers))}
+                  "context": site_context(args.site / "context.md", set(servers)),
+                  **site_presets(args.site / "models.json", HERE / "models.json")}
     except Failed as exc:
         say(f"Mu2e connection ({args.mode}): {exc}")
         return 1
