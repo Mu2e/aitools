@@ -51,7 +51,7 @@ repo="${HEP_GENESIS_REPO:-$(pin repo)}"
 ref="${ref:-$(pin ref)}"
 [[ -n "$repo" && -n "$ref" ]] || { echo "ERROR: no repo/ref (see $here/../hep-genesis.pin)" >&2; exit 2; }
 
-for tool in git node npm python3 ssh; do
+for tool in git node npm python3 ssh unzip; do
   command -v "$tool" >/dev/null || { echo "ERROR: $tool is not installed" >&2; exit 1; }
 done
 major="$(node -p 'process.versions.node.split(".")[0]')"
@@ -67,11 +67,32 @@ git -C "$dest" checkout --quiet --detach "$ref" 2>/dev/null || git -C "$dest" ch
 echo "hep-genesis-agent at $(git -C "$dest" rev-parse --short HEAD) in $dest"
 
 (cd "$dest/desktop" && npm install --no-audit --no-fund)
-# An npm that holds back packages' install scripts leaves Electron without
-# its program ("Electron uninstall" at the start): run that one step here.
-if [[ ! -f "$dest/desktop/node_modules/electron/path.txt" ]]; then
+# Electron's program is fetched by an install script of its package. An npm
+# that holds such scripts back leaves it out ("Electron uninstall" at the
+# start), so run that step here. With some Node versions the step downloads
+# the archive and then stops without unpacking it and without an error:
+# unpack it from Electron's cache in that case.
+electron="$dest/desktop/node_modules/electron"
+if [[ ! -f "$electron/path.txt" ]]; then
   echo "downloading Electron"
-  (cd "$dest/desktop" && node node_modules/electron/install.js)
+  (cd "$dest/desktop" && env -u ELECTRON_SKIP_BINARY_DOWNLOAD node node_modules/electron/install.js) || true
+fi
+if [[ ! -f "$electron/path.txt" ]]; then
+  version="$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "$electron/package.json" | head -1)"
+  case "$(uname -s)" in
+    Darwin) cache="$HOME/Library/Caches/electron"; program="Electron.app/Contents/MacOS/Electron" ;;
+    *)      cache="${XDG_CACHE_HOME:-$HOME/.cache}/electron"; program="electron" ;;
+  esac
+  cache="${electron_config_cache:-$cache}"
+  zip="$(find "$cache" -name "electron-v$version-*.zip" 2>/dev/null | head -1 || true)"
+  [[ -n "$zip" ]] || {
+    echo "ERROR: Electron $version was not downloaded (nothing in $cache)." >&2
+    echo "       Run: cd $dest/desktop && node node_modules/electron/install.js" >&2; exit 1; }
+  echo "unpacking $(basename "$zip")"
+  mkdir -p "$electron/dist"
+  unzip -q -o "$zip" -d "$electron/dist"
+  [[ -e "$electron/dist/$program" ]] || { echo "ERROR: $zip does not hold $program" >&2; exit 1; }
+  printf '%s' "$program" > "$electron/path.txt"
 fi
 
 [[ -f "$dest/desktop/src/main/startHook.ts" ]] || {

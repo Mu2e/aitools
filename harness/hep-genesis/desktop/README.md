@@ -50,7 +50,7 @@ aitools/harness/hep-genesis/desktop/connect.py --mode ssh --check
 | `ssh ... failed (...). Is there a Kerberos ticket (kinit)?` | no ticket, or ssh is not set up for Fermilab |
 | `the server registry is not reachable ...` | `--mode local` away from the Fermilab network: start the VPN, or use `--mode ssh` |
 | `port N on this machine is already in use` | another program has the port; `--mode ssh` forwards each server to its own port number |
-| `Error: Electron uninstall` at `npm run dev` | npm held back Electron's install script; in `~/hep-genesis/desktop/desktop` run `node node_modules/electron/install.js` (a new `install.sh` run does it) |
+| `Error: Electron uninstall` at `npm run dev` | Electron's program is missing: npm held back its install script, or that script stopped without unpacking. Run `install.sh` again; it fetches and unpacks it |
 | a server shows "error" in the panel | the token expired or the server is down; restart the app for a new token |
 
 Not on the laptop: automations, the web UI's start-a-chat link and its
