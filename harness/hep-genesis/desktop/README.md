@@ -39,9 +39,21 @@ newer, python3, and ssh set up for Fermilab. macOS or Linux.
   app's stock endpoints are not added. Endpoints already in the app are not
   removed: delete those you do not want in the Models panel.
 
-The Fermilab model addresses (vLLM, LiteLLM) are https and are not
-forwarded by `--mode ssh`: away from the Fermilab network they work only if
-the lab serves them to the outside.
+**The Fermilab models in `--mode ssh`.** vLLM and LiteLLM answer only on the
+Fermilab network. `--mode ssh` reaches them through the same ssh connection:
+a small relay on the laptop takes plain http on a local port and speaks
+https to the lab's server through a forwarded port. The app is given the
+local addresses, and their names end in "(over ssh)":
+
+| Model service | Address in the app |
+|---|---|
+| vLLM (the site's default, no key) | `http://127.0.0.1:8451/v1` |
+| LiteLLM (your Fermilab key) | `http://127.0.0.1:8452/v1` |
+
+The ports are set in `desktop/models.json` ("relay"). An endpoint saved in
+one mode does not work in the other: `--mode local` uses the lab's own
+addresses. The page that issues LiteLLM keys (`llm-keys.fnal.gov`) is a web
+page and still needs the Fermilab network or VPN in your browser.
 
 In the Servers panel these servers are marked "site": they can be switched
 off, not edited.
@@ -61,6 +73,7 @@ aitools/harness/hep-genesis/desktop/connect.py --mode ssh --check
 | `the server registry is not reachable ...` | `--mode local` away from the Fermilab network: start the VPN, or use `--mode ssh` |
 | `port N on this machine is already in use` | another program has the port; `--mode ssh` forwards each server to its own port number |
 | `Error: Electron uninstall` at `npm run dev` | Electron's program is missing: npm held back its install script, or that script stopped without unpacking. Run `install.sh` again; it fetches and unpacks it |
+| a model answers `The relay could not reach ...` | the ssh connection is gone (the laptop slept, the ticket expired): restart the app |
 | a server shows "error" in the panel | the token expired or the server is down; restart the app for a new token |
 
 Not on the laptop: automations, the web UI's start-a-chat link and its

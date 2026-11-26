@@ -16,6 +16,12 @@ the last of them when this fails.
     connect.py --stop          end the ssh connection of --mode ssh
     connect.py --check ...     say what would be set up, without the token
 
+In --mode ssh the lab's model addresses (models.json, "relay") are reached
+through the same ssh connection: they are https, so a small relay on this
+machine takes plain http on a local port and speaks https to the lab's
+server, under its own name, through a forwarded port. The app gets the
+local address.
+
 The servers are the ones the site's servers.json switches on in its
 registry, so the list is the same as on the gpvms. The token is $MIKEY_TOKEN
 when set; otherwise it is fetched over ssh with the command servers.json
@@ -148,40 +154,180 @@ def running_tunnel() -> dict | None:
 
 def stop_tunnel() -> bool:
     t = running_tunnel()
-    if t:
+    try:
+        saved = json.loads(tunnel_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        saved = {}
+    for pid in (saved.get("pid"), saved.get("relay_pid")):
         try:
-            os.kill(int(t["pid"]), signal.SIGTERM)
-        except OSError:
+            os.kill(int(pid), signal.SIGTERM)
+        except (OSError, TypeError, ValueError):
             pass
     tunnel_file().unlink(missing_ok=True)
     return bool(t)
 
 
-def open_tunnel(host: str, targets: list[tuple[str, int]]) -> None:
-    """Forward each (host, port) to the same port on this machine."""
-    want = sorted({f"{h}:{p}" for h, p in targets})
-    t = running_tunnel()
-    if t and t.get("targets") == want and all(listening(p) for _, p in targets):
-        return
-    stop_tunnel()
-    busy = [p for _, p in targets if listening(p)]
-    if busy:
-        raise Failed(f"port {busy[0]} on this machine is already in use by another program")
-    forwards = [x for h, p in targets for x in ("-L", f"127.0.0.1:{p}:{h}:{p}")]
-    argv = ssh_base(host)[:-1] + ["-N", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=60"] + forwards + [host]
-    log = open(state_dir() / "mu2e-tunnel.log", "w")
-    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
-    tunnel_file().write_text(json.dumps({"pid": proc.pid, "host": host, "targets": want}), encoding="utf-8")
+def wait_listening(ports: list[int], proc: subprocess.Popen, what: str, log_name: str) -> None:
     deadline = time.time() + 15
     while time.time() < deadline:
         if proc.poll() is not None:
-            tunnel_file().unlink(missing_ok=True)
-            raise Failed(f"the ssh connection to {host} ended at once; see {log.name}")
-        if all(listening(p) for _, p in targets):
+            stop_tunnel()
+            raise Failed(f"{what} ended at once; see {log_name}")
+        if all(listening(p) for p in ports):
             return
         time.sleep(0.3)
     stop_tunnel()
-    raise Failed(f"the forwarded ports did not open within 15 s; see {log.name}")
+    raise Failed(f"{what}: the ports did not open within 15 s; see {log_name}")
+
+
+def open_tunnel(host: str, targets: list[tuple[int, str, int]], relays: list[tuple[int, int, str]]) -> None:
+    """Forward each (local port, host, port) over one ssh connection, and
+    start the relay for each (local http port, forwarded port, name)."""
+    want = sorted({f"{lp}:{h}:{p}" for lp, h, p in targets} | {f"relay:{lp}:{up}:{name}" for lp, up, name in relays})
+    ports = [lp for lp, _, _ in targets] + [lp for lp, _, _ in relays]
+    t = running_tunnel()
+    if t and t.get("targets") == want and all(listening(p) for p in ports):
+        return
+    stop_tunnel()
+    busy = [p for p in ports if listening(p)]
+    if busy:
+        raise Failed(f"port {busy[0]} on this machine is already in use by another program")
+    forwards = [x for lp, h, p in targets for x in ("-L", f"127.0.0.1:{lp}:{h}:{p}")]
+    argv = ssh_base(host)[:-1] + ["-N", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=60"] + forwards + [host]
+    log = open(state_dir() / "mu2e-tunnel.log", "w")
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+    state = {"pid": proc.pid, "host": host, "targets": want}
+    tunnel_file().write_text(json.dumps(state), encoding="utf-8")
+    wait_listening([lp for lp, _, _ in targets], proc, f"the ssh connection to {host}", log.name)
+    if relays:
+        specs = [f"{lp}=127.0.0.1:{up}={name}" for lp, up, name in relays]
+        relay = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--relay", *specs],
+                                 stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+        state["relay_pid"] = relay.pid
+        tunnel_file().write_text(json.dumps(state), encoding="utf-8")
+        wait_listening([lp for lp, _, _ in relays], relay, "the relay for the lab's model addresses", log.name)
+
+
+# --------------------------------------------------------------- the relay
+
+RELAY_TUNNEL_OFFSET = 100   # a relayed name's forwarded port = its relay port + this
+
+
+def relay_ports(path: Path) -> dict:
+    """{name: local http port} of the https addresses to relay in --mode ssh."""
+    try:
+        found = json.loads(path.read_text(encoding="utf-8")).get("relay", {})
+    except (OSError, ValueError):
+        return {}
+    return {str(k): int(v) for k, v in found.items() if isinstance(v, int)}
+
+
+def relayed(url: str, relays: dict) -> str:
+    """The local address for an https address that is relayed, else the url."""
+    u = urlparse(url)
+    if u.scheme == "https" and u.hostname in relays and u.port in (None, 443):
+        return u._replace(scheme="http", netloc=f"127.0.0.1:{relays[u.hostname]}").geturl()
+    return url
+
+
+def relay_serve(specs: list[str]) -> int:
+    """Run the relay: each spec is LISTENPORT=HOST:PORT=NAME. A request to
+    http://127.0.0.1:LISTENPORT goes to HOST:PORT over TLS, checked against
+    NAME and with NAME as its Host. One request per connection, so the
+    answer can be passed on as it comes (streamed answers stay streamed)."""
+    import ssl
+    import threading
+
+    ctx = ssl.create_default_context()
+    if not ctx.cert_store_stats().get("x509_ca"):   # a Python without its own CA list (python.org on macOS)
+        for bundle in ("/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt"):
+            if os.path.exists(bundle):
+                ctx.load_verify_locations(bundle)
+                break
+
+    def handle(client: socket.socket, target: tuple[str, int], name: str) -> None:
+        up = None
+        answered = False
+        try:
+            client.settimeout(60)
+            head = b""
+            while b"\r\n\r\n" not in head:
+                chunk = client.recv(65536)
+                if not chunk or len(head) > 262144:
+                    return
+                head += chunk
+            top, _, body = head.partition(b"\r\n\r\n")
+            lines = top.split(b"\r\n")
+            fields = {}
+            kept = [lines[0]]
+            for line in lines[1:]:
+                key = line.split(b":", 1)[0].strip().lower()
+                fields[key] = line.split(b":", 1)[-1].strip()
+                if key not in (b"host", b"connection", b"proxy-connection", b"keep-alive"):
+                    kept.append(line)
+            kept += [b"Host: " + name.encode(), b"Connection: close"]
+            up = ctx.wrap_socket(socket.create_connection(target, timeout=20), server_hostname=name)
+            up.settimeout(None)
+            client.settimeout(None)
+            up.sendall(b"\r\n".join(kept) + b"\r\n\r\n" + body)
+            if fields.get(b"content-length", b"").isdigit():   # the rest of the request, then only the answer
+                left = int(fields[b"content-length"]) - len(body)
+                while left > 0:
+                    chunk = client.recv(min(65536, left))
+                    if not chunk:
+                        break
+                    up.sendall(chunk)
+                    left -= len(chunk)
+            elif b"transfer-encoding" in fields:               # a request of unknown length: pass it on alongside
+                def upward() -> None:
+                    try:
+                        while True:
+                            chunk = client.recv(65536)
+                            if not chunk:
+                                break
+                            up.sendall(chunk)
+                    except OSError:
+                        pass
+                threading.Thread(target=upward, daemon=True).start()
+            while True:
+                chunk = up.recv(65536)
+                if not chunk:
+                    break
+                answered = True
+                client.sendall(chunk)
+        except (OSError, ssl.SSLError) as exc:
+            print(f"relay to {name}: {exc}", file=sys.stderr, flush=True)
+            if not answered:
+                try:
+                    text = f"The relay could not reach {name}: {exc}\n".encode()
+                    client.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nContent-Length: "
+                                   + str(len(text)).encode() + b"\r\nConnection: close\r\n\r\n" + text)
+                except OSError:
+                    pass
+        finally:
+            for sock in (up, client):
+                try:
+                    if sock:
+                        sock.close()
+                except OSError:
+                    pass
+
+    def listen(port: int, target: tuple[str, int], name: str) -> None:
+        server = socket.socket()
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("127.0.0.1", port))
+        server.listen(32)
+        while True:
+            client, _ = server.accept()
+            threading.Thread(target=handle, args=(client, target, name), daemon=True).start()
+
+    for spec in specs:
+        port, target, name = spec.split("=")
+        host, _, tport = target.rpartition(":")
+        threading.Thread(target=listen, args=(int(port), (host, int(tport)), name), daemon=True).start()
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    while True:
+        time.sleep(3600)
 
 
 def site_endpoint(env_template: Path) -> list[dict]:
@@ -244,7 +390,11 @@ def main() -> int:
     ap.add_argument("--site", type=Path, default=SITE, help="folder with servers.json, env.template, models.json, context.md")
     ap.add_argument("--stop", action="store_true", help="end the ssh connection of --mode ssh")
     ap.add_argument("--check", action="store_true", help="print the result without the token")
+    ap.add_argument("--relay", nargs="+", metavar="SPEC", help=argparse.SUPPRESS)   # started by --mode ssh
     args = ap.parse_args()
+
+    if args.relay:
+        return relay_serve(args.relay)
 
     if args.stop:
         say("ssh connection ended" if stop_tunnel() else "no ssh connection was open")
@@ -256,14 +406,28 @@ def main() -> int:
         chosen = {n: e for n, e in entries.items() if enabled.get(n)}
         if not chosen:
             raise Failed("the registry lists none of the servers the site switches on")
+        endpoints = site_endpoint(args.site / "env.template")
+        models = site_presets(args.site / "models.json", HERE / "models.json")
         if args.mode == "ssh":
             targets = []
             for e in chosen.values():
                 u = urlparse(e["url"])
                 if not u.hostname or not u.port:
                     raise Failed(f"cannot forward {e['url']}: no host or port")
-                targets.append((u.hostname, u.port))
-            open_tunnel(args.ssh_host, targets)
+                targets.append((u.port, u.hostname, u.port))
+            # The lab's https model addresses that are in use: relayed.
+            relays = relay_ports(HERE / "models.json")
+            urls = [e["baseUrl"] for e in endpoints] + [p["baseUrl"] for p in models.get("presets", [])]
+            used = sorted({urlparse(u).hostname for u in urls if relayed(u, relays) != u})
+            open_tunnel(args.ssh_host,
+                        targets + [(relays[n] + RELAY_TUNNEL_OFFSET, n, 443) for n in used],
+                        [(relays[n], relays[n] + RELAY_TUNNEL_OFFSET, n) for n in used])
+            for e in endpoints:
+                if relayed(e["baseUrl"], relays) != e["baseUrl"]:
+                    e["baseUrl"], e["name"] = relayed(e["baseUrl"], relays), e["name"] + " (over ssh)"
+            for p in models.get("presets", []):
+                if relayed(p["baseUrl"], relays) != p["baseUrl"]:
+                    p["baseUrl"], p["name"] = relayed(p["baseUrl"], relays), p["name"] + " (over ssh)"
         servers = {}
         for name, e in chosen.items():
             url = e["url"]
@@ -276,9 +440,8 @@ def main() -> int:
             servers[name] = {"url": url}
             if needs_token:
                 servers[name]["headers"] = {"Authorization": "Bearer " + ("<token>" if args.check else token)}
-        result = {"servers": servers, "endpoints": site_endpoint(args.site / "env.template"),
-                  "context": site_context(args.site / "context.md", set(servers)),
-                  **site_presets(args.site / "models.json", HERE / "models.json")}
+        result = {"servers": servers, "endpoints": endpoints,
+                  "context": site_context(args.site / "context.md", set(servers)), **models}
     except Failed as exc:
         say(f"Mu2e connection ({args.mode}): {exc}")
         return 1

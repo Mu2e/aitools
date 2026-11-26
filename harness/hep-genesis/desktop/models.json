@@ -1,5 +1,10 @@
 {
   "_comment": "Model presets the desktop app offers at Mu2e in addition to ../site/models.json (the web UI's list on the gpvms): gateways a laptop can reach that the gpvm install does not offer. Same format as that file's presets. connect.py appends them; a preset whose baseUrl is already in the site's list is left out.",
+  "relay_comment": "Fermilab's https model addresses that --mode ssh reaches through the ssh connection, each with the local port its relay listens on (the forwarded port is that plus 100). Keep a port once given: it is part of the address the app saves.",
+  "relay": {
+    "vllm.fnal.gov": 8451,
+    "litellm.fnal.gov": 8452
+  },
   "presets": [
     {
       "name": "NRP (National Research Platform)",
